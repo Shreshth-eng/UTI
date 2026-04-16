@@ -1,93 +1,60 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { AuthProvider } from './context/AuthContext'
-import ProtectedRoute from './components/ProjectedRoute'
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { AuthProvider } from "./context/AuthContext";
+import ProtectedRoute from "./components/ProjectedRoute";
 
-import Landing  from './pages/Landing'
-import Login    from './pages/Login'
-import Signup   from './pages/Signup'
+import Landing from "./pages/Landing";
+import Login from "./pages/Login";
+import Signup from "./pages/Signup";
+
 import Receiver from "./components/Receiver";
 import Sender from "./components/Sender";
 import TruckOwner from "./components/TruckOwner";
 import Driver from "./components/Driver";
-
 
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
+          {/* Public Routes */}
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
 
+          {/* Protected Dashboard Routes */}
+
           <Route
-            path="/receiver"
+            path="/dashboard/receiver"
             element={
               <ProtectedRoute role="receiver">
-                <div className="min-h-screen bg-[#0a0f1e] flex items-center justify-center text-white text-2xl font-bold">
-                  <Route
-                    path="/receiver"
-                    element={
-                      <ProtectedRoute role="receiver">
-                        <Receiver />
-                      </ProtectedRoute>
-                    }
-                  />
-                </div>
+                <Receiver />
               </ProtectedRoute>
             }
           />
 
           <Route
-            path="/sender"
+            path="/dashboard/sender"
             element={
               <ProtectedRoute role="sender">
-                <div className="min-h-screen bg-[#0a0f1e] flex items-center justify-center text-white text-2xl font-bold">
-                  <Route
-                    path="/sender"
-                    element={
-                      <ProtectedRoute role="sender">
-                        <Sender />
-                      </ProtectedRoute>
-                    }
-                  />
-                </div>
+                <Sender />
               </ProtectedRoute>
             }
           />
 
           <Route
-            path="/truck-owner"
+            path="/dashboard/truck-owner"
             element={
-              <ProtectedRoute role="truckOwner">
-                <div className="min-h-screen bg-[#0a0f1e] flex items-center justify-center text-white text-2xl font-bold">
-                  <Route
-                    path="/truck-owner"
-                    element={
-                      <ProtectedRoute role="truckOwner">
-                        <TruckOwner />
-                      </ProtectedRoute>
-                    }
-                  />
-                </div>
+              <ProtectedRoute role="truck_owner">
+                <TruckOwner />
               </ProtectedRoute>
             }
           />
 
           <Route
-            path="/driver"
+            path="/dashboard/driver"
             element={
               <ProtectedRoute role="driver">
-                <div className="min-h-screen bg-[#0a0f1e] flex items-center justify-center text-white text-2xl font-bold">
-                  <Route
-                    path="/driver"
-                    element={
-                      <ProtectedRoute role="driver">
-                        <Driver />
-                      </ProtectedRoute>
-                    }
-                  />
-                </div>
+                <Driver />
               </ProtectedRoute>
             }
           />
@@ -95,12 +62,7 @@ export default function App() {
       </BrowserRouter>
     </AuthProvider>
   );
-};
-
-
-
-
-
+}
 
 // import { useState } from "react";
 // import Receiver from "./components/Receiver";

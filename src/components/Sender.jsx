@@ -1,15 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Sidebar from "../components/shared/Sidebar";
 import Topbar from "../components/shared/Topbar";
 import StatCard from "../components/shared/StatCard";
 import Badge from "../components/shared/Badge";
 import TrackingTimeline from "../components/shared/TrackingTimeline";
-import {
-  senderStats,
-  senderShipments,
-  trackingSteps,
-  senderNotifications,
-} from "../data/mockData";
+import { getMyProfile, getShipments, createShipment, getUser } from "../utils/api";
 
 const navItems = [
   { label: "Overview", icon: "⊞" },
@@ -39,7 +34,57 @@ const inputStyle = {
   outline: "none",
 };
 
-function CreateOrderModal({ onClose }) {
+// Map backend status → filter label
+const normalizeStatus = (status) => {
+  const map = {
+    "in-transit": "In Transit",
+    delivered: "Delivered",
+    pending: "Pending",
+    completed: "Delivered",
+    delayed: "In Transit",
+  };
+  return map[status] || "Pending";
+};
+
+// Build timeline steps from shipment tracking history
+const buildTimelineSteps = (shipment) => {
+  if (!shipment) return [];
+  const steps = [];
+
+  steps.push({
+    label: "Order Placed",
+    time: shipment.createdAt
+      ? new Date(shipment.createdAt).toLocaleString()
+      : "—",
+    done: true,
+  });
+
+  if (shipment.trackingHistory && shipment.trackingHistory.length > 0) {
+    shipment.trackingHistory.forEach((entry) => {
+      steps.push({
+        label: entry.checkpointMessage || entry.status,
+        time: entry.timestamp
+          ? new Date(entry.timestamp).toLocaleString()
+          : "—",
+        done: true,
+      });
+    });
+  }
+
+  if (shipment.status !== "delivered" && shipment.status !== "completed") {
+    steps.push({
+      label: "Delivery Pending",
+      time: shipment.estimatedDelivery
+        ? new Date(shipment.estimatedDelivery).toLocaleDateString()
+        : "ETA",
+      done: false,
+    });
+  }
+
+  return steps;
+};
+
+function CreateOrderModal({ onClose, onCreated }) {
   const [form, setForm] = useState({
     to: "",
     goods: "",
@@ -48,7 +93,38 @@ function CreateOrderModal({ onClose }) {
     date: "",
     instructions: "",
   });
+  const [loading, setLoading] = useState(false);
+
   const handle = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+
+  const handleCreate = async () => {
+    if (!form.to || !form.goods || !form.weight) {
+      alert("Please fill in Destination, Goods, and Weight.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const payload = {
+        destination: form.to,
+        goodsType: form.goods,
+        weight: parseFloat(form.weight),
+        truckType: form.truckType,
+        pickupDate: form.date,
+        specialInstructions: form.instructions,
+      };
+      const res = await createShipment(payload);
+      if (res?.error || res?.message?.toLowerCase().includes("error")) {
+        alert(res.error || res.message || "Failed to create shipment.");
+        return;
+      }
+      onCreated();
+      onClose();
+    } catch (err) {
+      alert("Failed to create shipment. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div
@@ -175,25 +251,23 @@ function CreateOrderModal({ onClose }) {
           <div className="flex gap-3">
             <button
               onClick={onClose}
+              disabled={loading}
               className="flex-1 py-3 text-white/50 text-sm font-semibold rounded-xl transition hover:bg-white/5"
               style={{ border: "1px solid rgba(255,255,255,0.10)" }}
             >
               Cancel
             </button>
             <button
-              onClick={() => {
-                alert(
-                  `Shipment created!\nTo: ${form.to}\n${form.goods} · ${form.weight}kg`,
-                );
-                onClose();
-              }}
+              onClick={handleCreate}
+              disabled={loading}
               className="flex-1 py-3 text-white text-sm font-black rounded-xl transition hover:opacity-90"
               style={{
                 background: "linear-gradient(135deg, #f97316, #ea580c)",
                 boxShadow: "0 0 20px rgba(249,115,22,0.3)",
+                opacity: loading ? 0.7 : 1,
               }}
             >
-              Create Shipment
+              {loading ? "Creating..." : "Create Shipment"}
             </button>
           </div>
         </div>
@@ -204,16 +278,123 @@ function CreateOrderModal({ onClose }) {
 
 export default function Sender() {
   const [activeNav, setActiveNav] = useState("Overview");
-  const [selectedId, setSelectedId] = useState("SHP-2041");
+  const [selectedId, setSelectedId] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [filter, setFilter] = useState("All");
 
+  // Backend state
+  const [profile, setProfile] = useState(null);
+  const [shipments, setShipments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const [profileRes, shipmentsRes] = await Promise.all([
+        getMyProfile(),
+        getShipments(),
+      ]);
+      setProfile(profileRes);
+      const list = Array.isArray(shipmentsRes)
+        ? shipmentsRes
+        : shipmentsRes.shipments || [];
+      setShipments(list);
+      // Auto-select first shipment
+      if (list.length > 0 && !selectedId) {
+        setSelectedId(list[0]._id);
+      }
+    } catch (err) {
+      setError("Failed to load dashboard data.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  // ── Derived data ────────────────────────────────────────────────
+
   const filters = ["All", "In Transit", "Delivered", "Pending"];
+
   const filtered =
     filter === "All"
-      ? senderShipments
-      : senderShipments.filter((s) => s.status === filter);
-  const selected = senderShipments.find((s) => s.id === selectedId);
+      ? shipments
+      : shipments.filter((s) => normalizeStatus(s.status) === filter);
+
+  const selected = shipments.find((s) => s._id === selectedId);
+  const timelineSteps = buildTimelineSteps(selected);
+
+  // Stats
+  const activeCount = shipments.filter(
+    (s) => s.status === "in-transit" || s.status === "delayed",
+  ).length;
+  const completedCount = shipments.filter(
+    (s) => s.status === "delivered" || s.status === "completed",
+  ).length;
+  const totalRevenue = shipments.reduce(
+    (sum, s) => sum + (s.amount ?? s.fare ?? s.cost ?? 0),
+    0,
+  );
+
+  // Notifications from tracking history
+  const notifications = shipments
+    .flatMap((s) =>
+      (s.trackingHistory || []).slice(-1).map((h) => ({
+        id: s._id,
+        message: h.checkpointMessage || h.status,
+        time: h.timestamp ? new Date(h.timestamp).toLocaleString() : "",
+      })),
+    )
+    .slice(0, 5);
+
+  // User info
+  const localUser = getUser();
+  const userName = profile?.name ?? localUser?.name ?? "Sender";
+  const userPhone = profile?.phone ?? localUser?.phone ?? "";
+  const initials = userName
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+
+  // ── Render ──────────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div
+        className="flex items-center justify-center min-h-screen"
+        style={{ background: "#0a0f1e" }}
+      >
+        <p className="text-white/50 text-sm animate-pulse">
+          Loading dashboard…
+        </p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        className="flex items-center justify-center min-h-screen"
+        style={{ background: "#0a0f1e" }}
+      >
+        <div className="text-center">
+          <p className="text-red-400 text-sm mb-3">{error}</p>
+          <button
+            onClick={fetchData}
+            className="text-xs text-white/50 px-4 py-2 rounded-xl border border-white/10 hover:bg-white/5 transition"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -231,45 +412,42 @@ export default function Sender() {
           setActiveNav(nav);
           if (nav === "Create Order") setShowModal(true);
         }}
-        user={{
-          name: "Sharma Exports",
-          initials: "SE",
-          phone: "+91 98001 11222",
-        }}
+        user={{ name: userName, initials, phone: userPhone }}
       />
 
       <main className="flex-1 p-8 overflow-auto relative z-10">
         <Topbar
           title="Sender Dashboard"
           subtitle="Shipment Control Center"
-          notifications={senderNotifications}
+          notifications={notifications}
         />
 
+        {/* ── Stat Cards ── */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           <StatCard
             label="Total Shipments"
-            value={senderStats.totalShipments}
+            value={shipments.length}
             sub="All time"
             accent="white"
             icon="📦"
           />
           <StatCard
             label="Active"
-            value={senderStats.active}
+            value={activeCount}
             sub="Moving now"
             accent="orange"
             icon="🚚"
           />
           <StatCard
             label="Completed"
-            value={senderStats.completed}
+            value={completedCount}
             sub="Delivered"
             accent="green"
             icon="✅"
           />
           <StatCard
             label="Revenue"
-            value={senderStats.revenue}
+            value={`₹${totalRevenue.toLocaleString()}`}
             sub="This month"
             accent="blue"
             icon="💰"
@@ -277,6 +455,7 @@ export default function Sender() {
         </div>
 
         <div className="grid grid-cols-5 gap-5">
+          {/* ── Shipments List ── */}
           <div className="col-span-3" style={glassCard}>
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-sm font-black text-white uppercase tracking-widest">
@@ -311,60 +490,93 @@ export default function Sender() {
             </div>
 
             <div className="flex flex-col gap-2">
-              {filtered.map((s) => (
-                <div
-                  key={s.id}
-                  onClick={() => setSelectedId(s.id)}
-                  className="flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-all duration-200"
-                  style={{
-                    background:
-                      selectedId === s.id
-                        ? "rgba(249,115,22,0.07)"
-                        : "rgba(255,255,255,0.02)",
-                    border:
-                      selectedId === s.id
-                        ? "1px solid rgba(249,115,22,0.20)"
-                        : "1px solid rgba(255,255,255,0.05)",
-                  }}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-sm font-black text-white">
-                        #{s.id}
-                      </span>
-                      <span className="text-xs text-white/25">{s.date}</span>
-                      <span className="text-xs font-bold text-orange-400 ml-auto">
-                        {s.amount}
-                      </span>
+              {filtered.length > 0 ? (
+                filtered.map((s) => (
+                  <div
+                    key={s._id}
+                    onClick={() => setSelectedId(s._id)}
+                    className="flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-all duration-200"
+                    style={{
+                      background:
+                        selectedId === s._id
+                          ? "rgba(249,115,22,0.07)"
+                          : "rgba(255,255,255,0.02)",
+                      border:
+                        selectedId === s._id
+                          ? "1px solid rgba(249,115,22,0.20)"
+                          : "1px solid rgba(255,255,255,0.05)",
+                    }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-black text-white">
+                          #{s._id?.slice(-6)?.toUpperCase() ?? "—"}
+                        </span>
+                        <span className="text-xs text-white/25">
+                          {s.createdAt
+                            ? new Date(s.createdAt).toLocaleDateString()
+                            : "—"}
+                        </span>
+                        <span className="text-xs font-bold text-orange-400 ml-auto">
+                          {s.amount || s.fare || s.cost
+                            ? `₹${(s.amount ?? s.fare ?? s.cost).toLocaleString()}`
+                            : "—"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-white/45 truncate">
+                        To {s.destination ?? s.to ?? "—"} ·{" "}
+                        {s.goodsType ?? s.goods ?? "—"} ·{" "}
+                        {s.weight ? `${s.weight} kg` : "—"}
+                      </p>
                     </div>
-                    <p className="text-xs text-white/45 truncate">
-                      To {s.to} · {s.goods} · {s.weight}
-                    </p>
+                    <Badge status={normalizeStatus(s.status)} />
                   </div>
-                  <Badge status={s.status} />
+                ))
+              ) : (
+                <div className="flex items-center justify-center h-32">
+                  <p className="text-white/30 text-sm">No shipments found</p>
                 </div>
-              ))}
+              )}
             </div>
           </div>
 
+          {/* ── Details + Tracking ── */}
           <div className="col-span-2 flex flex-col gap-5">
-            {selected && (
+            {selected ? (
               <>
                 <div style={glassCard}>
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="text-sm font-black text-white uppercase tracking-widest">
                       Details
                     </h2>
-                    <Badge status={selected.status} />
+                    <Badge status={normalizeStatus(selected.status)} />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     {[
-                      ["To", selected.to],
-                      ["Amount", selected.amount],
-                      ["Goods", selected.goods],
-                      ["Weight", selected.weight],
-                      ["Driver", selected.driver],
-                      ["Truck", selected.truck],
+                      ["To", selected.destination ?? selected.to ?? "—"],
+                      [
+                        "Amount",
+                        selected.amount || selected.fare || selected.cost
+                          ? `₹${(selected.amount ?? selected.fare ?? selected.cost).toLocaleString()}`
+                          : "—",
+                      ],
+                      ["Goods", selected.goodsType ?? selected.goods ?? "—"],
+                      [
+                        "Weight",
+                        selected.weight ? `${selected.weight} kg` : "—",
+                      ],
+                      [
+                        "Driver",
+                        selected.driver?.name ??
+                          selected.driverName ??
+                          "Not Assigned",
+                      ],
+                      [
+                        "Truck",
+                        selected.truck?.registrationNumber ??
+                          selected.truckNumber ??
+                          "Not Assigned",
+                      ],
                     ].map(([k, v]) => (
                       <div
                         key={k}
@@ -382,19 +594,42 @@ export default function Sender() {
                     ))}
                   </div>
                 </div>
+
                 <div style={glassCard}>
                   <h2 className="text-sm font-black text-white uppercase tracking-widest mb-4">
                     Tracking
                   </h2>
-                  <TrackingTimeline steps={trackingSteps} />
+                  {timelineSteps.length > 0 ? (
+                    <TrackingTimeline steps={timelineSteps} />
+                  ) : (
+                    <div className="flex items-center justify-center h-24">
+                      <p className="text-white/30 text-sm">
+                        No tracking events yet
+                      </p>
+                    </div>
+                  )}
                 </div>
               </>
+            ) : (
+              <div
+                style={glassCard}
+                className="flex items-center justify-center h-40"
+              >
+                <p className="text-white/30 text-sm">
+                  Select a shipment to view details
+                </p>
+              </div>
             )}
           </div>
         </div>
       </main>
 
-      {showModal && <CreateOrderModal onClose={() => setShowModal(false)} />}
+      {showModal && (
+        <CreateOrderModal
+          onClose={() => setShowModal(false)}
+          onCreated={fetchData}
+        />
+      )}
     </div>
   );
 }

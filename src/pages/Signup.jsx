@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { registerUser, saveAuth, getDashboardRoute } from "../utils/api";
 
 const roles = [
   {
@@ -15,7 +16,7 @@ const roles = [
     desc: "I send goods / factory",
   },
   {
-    value: "truckOwner",
+    value: "truck_owner",
     label: "Truck Owner",
     icon: "🚚",
     desc: "I own trucks / fleet",
@@ -73,7 +74,7 @@ export default function Signup() {
 
     setLoading(true);
     try {
-      const res = await fetch("/api/auth/signup", {
+      const res = await fetch("http://localhost:5000/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -97,7 +98,7 @@ export default function Signup() {
       const routes = {
         receiver: "/receiver",
         sender: "/sender",
-        truckOwner: "/truck-owner",
+        truck_owner: "/truck-owner",
         driver: "/driver",
       };
       navigate(routes[data.user.role] || "/");

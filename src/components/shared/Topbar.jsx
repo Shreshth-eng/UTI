@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-export default function Topbar({ title, subtitle, notifications }) {
+export default function Topbar({ title, subtitle, notifications = [] }) {
   const [showNotifs, setShowNotifs] = useState(false);
   const unread = notifications.filter((n) => !n.read).length;
 

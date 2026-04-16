@@ -1,15 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Sidebar from "../components/shared/Sidebar";
 import Topbar from "../components/shared/Topbar";
 import StatCard from "../components/shared/StatCard";
 import Badge from "../components/shared/Badge";
 import TrackingTimeline from "../components/shared/TrackingTimeline";
-import {
-  receiverStats,
-  receiverOrders,
-  trackingSteps,
-  receiverNotifications,
-} from "../data/mockData";
+import { getShipments, createShipment, getUser } from "../utils/api";
 
 const navItems = [
   { label: "Overview", icon: "⊞" },
@@ -38,7 +33,7 @@ const inputStyle = {
   outline: "none",
 };
 
-function NewRequestModal({ onClose }) {
+function NewRequestModal({ onClose, onSubmitted }) {
   const [form, setForm] = useState({
     from: "",
     to: "",
@@ -47,7 +42,40 @@ function NewRequestModal({ onClose }) {
     date: "",
     notes: "",
   });
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState("");
+
   const handle = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+
+  const handleSubmit = async () => {
+    setFormError("");
+    if (!form.from || !form.to || !form.goods || !form.weight) {
+      setFormError("Please fill all required fields");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const data = await createShipment({
+        receiverName: "Self",
+        origin: form.from,
+        destination: form.to,
+        cargo: {
+          description: form.goods,
+          weight: Number(form.weight),
+        },
+      });
+      if (data.shipment) {
+        onSubmitted(); // refresh list
+        onClose();
+      } else {
+        setFormError(data.message || "Request submit nahi hua");
+      }
+    } catch {
+      setFormError("Server error. Dobara try karo.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div
@@ -79,6 +107,12 @@ function NewRequestModal({ onClose }) {
               ×
             </button>
           </div>
+
+          {formError && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm px-4 py-3 rounded-xl mb-4">
+              {formError}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3 mb-3">
             {[
@@ -157,19 +191,15 @@ function NewRequestModal({ onClose }) {
               Cancel
             </button>
             <button
-              onClick={() => {
-                alert(
-                  `Request submitted!\n${form.from} → ${form.to}\n${form.goods} · ${form.weight}kg`,
-                );
-                onClose();
-              }}
-              className="flex-1 py-3 text-white text-sm font-black rounded-xl transition hover:opacity-90"
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="flex-1 py-3 text-white text-sm font-black rounded-xl transition hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               style={{
                 background: "linear-gradient(135deg, #3b82f6, #2563eb)",
                 boxShadow: "0 0 20px rgba(59,130,246,0.3)",
               }}
             >
-              Submit Request
+              {submitting ? "Submitting..." : "Submit Request"}
             </button>
           </div>
         </div>
@@ -178,18 +208,86 @@ function NewRequestModal({ onClose }) {
   );
 }
 
+// Backend status → display label
+const formatStatus = (s) =>
+  ({
+    in_transit: "In Transit",
+    delivered: "Delivered",
+    pending_pickup: "Pending",
+    cancelled: "Cancelled",
+  })[s] || s;
+
 export default function Receiver() {
+  const user = getUser();
+
   const [activeNav, setActiveNav] = useState("Overview");
-  const [selectedId, setSelectedId] = useState("ORD-1042");
+  const [selectedId, setSelectedId] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [filter, setFilter] = useState("All");
+
+  // ── Real data from backend ────────────────────
+  const [receiverOrders, setReceiverOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchOrders = () => {
+    setLoading(true);
+    getShipments()
+      .then((data) => {
+        if (Array.isArray(data)) {
+          const formatted = data.map((s) => ({
+            id: s._id.slice(-8).toUpperCase(),
+            _id: s._id,
+            from: s.origin,
+            to: s.destination,
+            goods: s.cargo?.description || "—",
+            weight: `${s.cargo?.weight}kg`,
+            status: formatStatus(s.status),
+            eta: s.estimatedDelivery
+              ? new Date(s.estimatedDelivery).toLocaleDateString()
+              : "TBD",
+            driver: s.assignedDriver?.name || "Unassigned",
+            truck: s.assignedTruck?.plateNumber || "Unassigned",
+            date: new Date(s.createdAt).toLocaleDateString(),
+            checkpoints: s.checkpoints || [],
+          }));
+          setReceiverOrders(formatted);
+          if (formatted.length > 0) setSelectedId(formatted[0].id);
+        }
+      })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchOrders();
+  }, []);
+
+  // ── Stats calculated from real data ──────────
+  const receiverStats = {
+    total: receiverOrders.length,
+    inTransit: receiverOrders.filter((o) => o.status === "In Transit").length,
+    delivered: receiverOrders.filter((o) => o.status === "Delivered").length,
+    pending: receiverOrders.filter((o) => o.status === "Pending").length,
+  };
+
+  // ── Tracking timeline from checkpoints ───────
+  const selectedOrder = receiverOrders.find((o) => o.id === selectedId);
+  const trackingSteps =
+    selectedOrder?.checkpoints?.map((cp) => ({
+      label: cp.message,
+      time: new Date(cp.timestamp).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      done: true,
+    })) || [];
+
+  const receiverNotifications = [];
 
   const filters = ["All", "In Transit", "Delivered", "Pending"];
   const filtered =
     filter === "All"
       ? receiverOrders
       : receiverOrders.filter((o) => o.status === filter);
-  const selectedOrder = receiverOrders.find((o) => o.id === selectedId);
 
   return (
     <div
@@ -205,15 +303,21 @@ export default function Receiver() {
         active={activeNav}
         setActive={setActiveNav}
         user={{
-          name: "Rahul Sharma",
-          initials: "RS",
-          phone: "+91 98765 43210",
+          name: user?.name || "User",
+          initials: user?.name
+            ? user.name
+                .split(" ")
+                .map((n) => n[0])
+                .join("")
+                .toUpperCase()
+            : "U",
+          phone: user?.phone || "",
         }}
       />
 
       <main className="flex-1 p-8 overflow-auto relative z-10">
         <Topbar
-          title="Good morning, Rahul 👋"
+          title={`Good morning, ${user?.name?.split(" ")[0] || "User"} 👋`}
           subtitle="Receiver Dashboard"
           notifications={receiverNotifications}
         />
@@ -283,40 +387,52 @@ export default function Receiver() {
               ))}
             </div>
 
-            <div className="flex flex-col gap-2">
-              {filtered.map((order) => (
-                <div
-                  key={order.id}
-                  onClick={() => setSelectedId(order.id)}
-                  className="flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-all duration-200"
-                  style={{
-                    background:
-                      selectedId === order.id
-                        ? "rgba(59,130,246,0.08)"
-                        : "rgba(255,255,255,0.02)",
-                    border:
-                      selectedId === order.id
-                        ? "1px solid rgba(59,130,246,0.20)"
-                        : "1px solid rgba(255,255,255,0.05)",
-                  }}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-sm font-black text-white">
-                        #{order.id}
-                      </span>
-                      <span className="text-xs text-white/25">
-                        {order.date}
-                      </span>
+            {/* Loading state */}
+            {loading ? (
+              <div className="flex items-center justify-center py-12">
+                <p className="text-white/30 text-sm">Loading orders...</p>
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="flex items-center justify-center py-12">
+                <p className="text-white/25 text-sm">Koi order nahi mila</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {filtered.map((order) => (
+                  <div
+                    key={order.id}
+                    onClick={() => setSelectedId(order.id)}
+                    className="flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-all duration-200"
+                    style={{
+                      background:
+                        selectedId === order.id
+                          ? "rgba(59,130,246,0.08)"
+                          : "rgba(255,255,255,0.02)",
+                      border:
+                        selectedId === order.id
+                          ? "1px solid rgba(59,130,246,0.20)"
+                          : "1px solid rgba(255,255,255,0.05)",
+                    }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-black text-white">
+                          #{order.id}
+                        </span>
+                        <span className="text-xs text-white/25">
+                          {order.date}
+                        </span>
+                      </div>
+                      <p className="text-xs text-white/45 truncate">
+                        {order.from} → {order.to} · {order.goods} ·{" "}
+                        {order.weight}
+                      </p>
                     </div>
-                    <p className="text-xs text-white/45 truncate">
-                      {order.from} → {order.to} · {order.goods} · {order.weight}
-                    </p>
+                    <Badge status={order.status} />
                   </div>
-                  <Badge status={order.status} />
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="col-span-2" style={glassCard}>
@@ -352,6 +468,12 @@ export default function Receiver() {
                 </div>
 
                 <TrackingTimeline steps={trackingSteps} />
+
+                {trackingSteps.length === 0 && (
+                  <p className="text-xs text-white/25 text-center mt-4">
+                    Abhi koi update nahi hai
+                  </p>
+                )}
               </>
             ) : (
               <div className="flex items-center justify-center h-full min-h-48">
@@ -364,7 +486,12 @@ export default function Receiver() {
         </div>
       </main>
 
-      {showModal && <NewRequestModal onClose={() => setShowModal(false)} />}
+      {showModal && (
+        <NewRequestModal
+          onClose={() => setShowModal(false)}
+          onSubmitted={fetchOrders}
+        />
+      )}
     </div>
   );
 }
