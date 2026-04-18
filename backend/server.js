@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 
 // Middleware
-app.use(cors({ origin: "http://localhost:5173" })); // Vite default port
+app.use(cors({ origin: "http://localhost:5173" }));
 app.use(express.json());
 
 // Routes
@@ -16,13 +16,14 @@ app.use("/api/auth", require("./routes/auth"));
 app.use("/api/shipments", require("./routes/shipments"));
 app.use("/api/trucks", require("./routes/trucks"));
 app.use("/api/trips", require("./routes/trips"));
+app.use("/api/requests", require("./routes/requests")); // ← NAYA
+app.use("/api/notifications", require("./routes/notifications")); // ← NAYA
 
 // Health check
 app.get("/", (req, res) => {
   res.json({ message: "TruckLink API is running ✅" });
 });
 
-// Connect MongoDB and start server
 const PORT = process.env.PORT || 5000;
 
 mongoose

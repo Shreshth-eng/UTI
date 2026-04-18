@@ -19,7 +19,7 @@ const truckSchema = new mongoose.Schema(
       required: true,
     },
     capacity: {
-      type: Number, // in kg
+      type: Number,
       required: true,
     },
     assignedDriver: {
@@ -36,8 +36,14 @@ const truckSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    // ── GPS location (driver updates this in real time) ──
+    currentLocation: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+      updatedAt: { type: Date, default: null },
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 module.exports = mongoose.model("Truck", truckSchema);

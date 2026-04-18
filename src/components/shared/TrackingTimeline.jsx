@@ -23,7 +23,7 @@ export default function TrackingTimeline({ steps }) {
   return (
     <div className="flex flex-col">
       {steps.map((step, i) => {
-        const s = cfg[step.status];
+        const s = cfg[step.status] || cfg.pending;
         return (
           <div key={i} className="flex gap-4">
             <div className="flex flex-col items-center">
