@@ -3,14 +3,15 @@ import Sidebar from "../components/shared/Sidebar";
 import Topbar from "../components/shared/Topbar";
 import StatCard from "../components/shared/StatCard";
 import Badge from "../components/shared/Badge";
-import { truckOwnerNotifications } from "../data/mockData";
 import {
   getTrucks,
   addTruck,
-  getShipments,
-  updateShipmentStatus,
+  getMyRequests,
+  confirmRequest,
+  getMyNotifications,
+  markAllNotificationsRead,
   getMyProfile,
-} from "../utils/api"; // adjust path if needed
+} from "../utils/api";
 
 const navItems = [
   { label: "Overview", icon: "⊞" },
@@ -40,39 +41,60 @@ const inputStyle = {
   outline: "none",
 };
 
+const normalizeTruckStatus = (status) => {
+  const map = {
+    available: "Available",
+    active: "On Trip",
+    maintenance: "Maintenance",
+  };
+  return map[status] || status;
+};
+
+function LoadingRow() {
+  return (
+    <div
+      className="p-4 rounded-xl animate-pulse"
+      style={{
+        background: "rgba(255,255,255,0.02)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div className="h-4 w-1/3 rounded bg-white/10 mb-2" />
+      <div className="h-3 w-1/2 rounded bg-white/5" />
+    </div>
+  );
+}
+
 function AddTruckModal({ onClose, onTruckAdded }) {
   const [form, setForm] = useState({
-    number: "",
-    type: "",
+    plateNumber: "",
+    model: "",
     capacity: "",
-    driver: "",
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-
   const handle = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
   const handleSubmit = async () => {
-    if (!form.number || !form.type || !form.capacity) {
-      setError("Please fill in all required fields.");
+    if (!form.plateNumber || !form.model || !form.capacity) {
+      setError("All fields are required.");
       return;
     }
     setLoading(true);
     setError("");
     try {
       const res = await addTruck({
-        number: form.number,
-        type: form.type,
-        capacity: form.capacity,
-        driver: form.driver,
+        plateNumber: form.plateNumber.toUpperCase(),
+        model: form.model,
+        capacity: parseFloat(form.capacity) * 1000,
       });
-      if (res?.success || res?._id || res?.truck) {
-        onTruckAdded && onTruckAdded(res.truck || res);
+      if (res?.truck || res?._id) {
+        onTruckAdded(res.truck || res);
         onClose();
       } else {
-        setError(res?.message || "Failed to add truck. Please try again.");
+        setError(res?.message || "Failed to add truck.");
       }
-    } catch (err) {
+    } catch {
       setError("Server error. Please try again.");
     } finally {
       setLoading(false);
@@ -119,48 +141,42 @@ function AddTruckModal({ onClose, onTruckAdded }) {
             </div>
           )}
 
-          {[
-            ["number", "Truck Number", "e.g. PB-10-AB-1234"],
-            ["capacity", "Capacity (Ton)", "e.g. 15"],
-            ["driver", "Assigned Driver", "e.g. Harjeet Singh"],
-          ].map(([name, label, ph]) => (
-            <div key={name} className="mb-3">
-              <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">
-                {label}
-              </label>
-              <input
-                name={name}
-                value={form[name]}
-                onChange={handle}
-                placeholder={ph}
-                style={inputStyle}
-              />
-            </div>
-          ))}
-
+          <div className="mb-3">
+            <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">
+              Plate Number *
+            </label>
+            <input
+              name="plateNumber"
+              value={form.plateNumber}
+              onChange={handle}
+              placeholder="e.g. PB10AB1234"
+              style={inputStyle}
+            />
+          </div>
+          <div className="mb-3">
+            <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">
+              Truck Model *
+            </label>
+            <input
+              name="model"
+              value={form.model}
+              onChange={handle}
+              placeholder="e.g. Tata 407"
+              style={inputStyle}
+            />
+          </div>
           <div className="mb-6">
             <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">
-              Truck Type
+              Capacity (Ton) *
             </label>
-            <select
-              name="type"
-              value={form.type}
+            <input
+              name="capacity"
+              type="number"
+              value={form.capacity}
               onChange={handle}
-              style={{ ...inputStyle, cursor: "pointer" }}
-            >
-              <option value="" style={{ background: "#0a0f1e" }}>
-                Select type
-              </option>
-              <option value="Light" style={{ background: "#0a0f1e" }}>
-                Light (up to 3 Ton)
-              </option>
-              <option value="Medium" style={{ background: "#0a0f1e" }}>
-                Medium (up to 10 Ton)
-              </option>
-              <option value="Heavy" style={{ background: "#0a0f1e" }}>
-                Heavy (up to 20 Ton)
-              </option>
-            </select>
+              placeholder="e.g. 10"
+              style={inputStyle}
+            />
           </div>
 
           <div className="flex gap-3">
@@ -191,46 +207,25 @@ function AddTruckModal({ onClose, onTruckAdded }) {
   );
 }
 
-// ── Loader & Error helpers ────────────────────────
-function LoadingRow() {
-  return (
-    <div
-      className="p-4 rounded-xl animate-pulse"
-      style={{
-        background: "rgba(255,255,255,0.02)",
-        border: "1px solid rgba(255,255,255,0.06)",
-      }}
-    >
-      <div className="h-4 w-1/3 rounded bg-white/10 mb-2" />
-      <div className="h-3 w-1/2 rounded bg-white/5" />
-    </div>
-  );
-}
-
 export default function TruckOwner() {
   const [activeNav, setActiveNav] = useState("Overview");
   const [showModal, setShowModal] = useState(false);
-
-  // ── Data state ──────────────────────────────────
   const [trucks, setTrucks] = useState([]);
-  const [requests, setRequests] = useState([]);
+  const [pendingRequests, setPendingRequests] = useState([]);
+  const [notifications, setNotifications] = useState([]);
   const [profile, setProfile] = useState(null);
-
-  // ── Loading / error state ───────────────────────
   const [trucksLoading, setTrucksLoading] = useState(true);
   const [requestsLoading, setRequestsLoading] = useState(true);
   const [trucksError, setTrucksError] = useState("");
   const [requestsError, setRequestsError] = useState("");
+  const [confirmingId, setConfirmingId] = useState(null);
 
-  // ── Fetch trucks ────────────────────────────────
   const fetchTrucks = useCallback(async () => {
     setTrucksLoading(true);
     setTrucksError("");
     try {
       const res = await getTrucks();
-      // API may return array or { trucks: [...] }
-      const list = Array.isArray(res) ? res : res?.trucks || [];
-      setTrucks(list);
+      setTrucks(Array.isArray(res) ? res : res?.trucks || []);
     } catch {
       setTrucksError("Could not load trucks.");
     } finally {
@@ -238,21 +233,16 @@ export default function TruckOwner() {
     }
   }, []);
 
-  // ── Fetch shipments (booking requests) ──────────
   const fetchRequests = useCallback(async () => {
     setRequestsLoading(true);
     setRequestsError("");
     try {
-      const res = await getShipments();
-      const list = Array.isArray(res) ? res : res?.shipments || [];
-      // Show only pending/unassigned shipments as booking requests
-      const pending = list.filter(
-        (s) =>
-          s.status === "pending" ||
-          s.status === "requested" ||
-          s.status === "unassigned",
+      const res = await getMyRequests();
+      const list = Array.isArray(res) ? res : [];
+      // Owner sees: driver accepted but not yet owner confirmed
+      setPendingRequests(
+        list.filter((r) => r.status === "accepted" && !r.ownerConfirmed),
       );
-      setRequests(pending);
     } catch {
       setRequestsError("Could not load requests.");
     } finally {
@@ -260,77 +250,83 @@ export default function TruckOwner() {
     }
   }, []);
 
-  // ── Fetch profile ───────────────────────────────
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const res = await getMyNotifications();
+      setNotifications(Array.isArray(res) ? res : []);
+    } catch {}
+  }, []);
+
   const fetchProfile = useCallback(async () => {
     try {
       const res = await getMyProfile();
       setProfile(res?.user || res);
-    } catch {
-      // silently fail; fallback to default sidebar info
-    }
+    } catch {}
   }, []);
 
   useEffect(() => {
     fetchTrucks();
     fetchRequests();
+    fetchNotifications();
     fetchProfile();
-  }, [fetchTrucks, fetchRequests, fetchProfile]);
+    // Poll every 30 sec for new confirmations + notifications
+    const interval = setInterval(() => {
+      fetchRequests();
+      fetchNotifications();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [fetchTrucks, fetchRequests, fetchNotifications, fetchProfile]);
 
-  // ── Computed stats from real data ───────────────
+  // Stats auto-compute from real truck statuses
   const stats = {
     totalTrucks: trucks.length,
-    activeTrips: trucks.filter(
-      (t) => t.status === "on_trip" || t.status === "active",
-    ).length,
-    available: trucks.filter(
-      (t) => t.status === "available" || t.status === "idle",
-    ).length,
-    maintenance: trucks.filter(
-      (t) => t.status === "maintenance" || t.status === "repair",
-    ).length,
+    onTrip: trucks.filter((t) => t.status === "active").length,
+    available: trucks.filter((t) => t.status === "available").length,
+    maintenance: trucks.filter((t) => t.status === "maintenance").length,
   };
 
-  // ── Accept / Reject request ─────────────────────
-  const handleRequest = async (id, action) => {
-    const newStatus = action === "accept" ? "accepted" : "rejected";
+  // Owner confirms → shipment assigned → truck status auto becomes "active"
+  const handleConfirm = async (requestId) => {
+    setConfirmingId(requestId);
     try {
-      await updateShipmentStatus(
-        id,
-        newStatus,
-        `Request ${newStatus} by owner`,
-      );
-      setRequests((prev) => prev.filter((r) => (r._id || r.id) !== id));
+      await confirmRequest(requestId);
+      setPendingRequests((prev) => prev.filter((r) => r._id !== requestId));
+      // Refresh trucks — "active" count will go up automatically
+      fetchTrucks();
+      fetchNotifications();
     } catch {
-      alert("Failed to update request. Please try again.");
+      alert("Failed to confirm. Please try again.");
+    } finally {
+      setConfirmingId(null);
     }
   };
 
-  // ── After truck added via modal ─────────────────
   const handleTruckAdded = (newTruck) => {
-    if (newTruck) {
-      setTrucks((prev) => [...prev, newTruck]);
-    } else {
-      fetchTrucks(); // refetch if no truck returned
-    }
+    if (newTruck) setTrucks((prev) => [...prev, newTruck]);
+    else fetchTrucks();
   };
 
-  // ── Sidebar user info ───────────────────────────
+  const unreadNotifs = notifications
+    .filter((n) => !n.read)
+    .slice(0, 5)
+    .map((n) => ({
+      id: n._id,
+      message: n.message,
+      time: new Date(n.createdAt).toLocaleString(),
+    }));
+
   const sidebarUser = profile
     ? {
-        name: profile.name || profile.fullName || "Truck Owner",
+        name: profile.name || "Truck Owner",
         initials: (profile.name || "TO")
           .split(" ")
           .map((w) => w[0])
           .join("")
           .toUpperCase()
           .slice(0, 2),
-        phone: profile.phone || profile.mobile || "",
+        phone: profile.phone || "",
       }
-    : {
-        name: "Gurpreet Fleets",
-        initials: "GF",
-        phone: "+91 97300 55566",
-      };
+    : { name: "Truck Owner", initials: "TO", phone: "" };
 
   return (
     <div
@@ -352,10 +348,10 @@ export default function TruckOwner() {
         <Topbar
           title="Fleet Dashboard"
           subtitle="Truck Owner Portal"
-          notifications={truckOwnerNotifications}
+          notifications={unreadNotifs}
         />
 
-        {/* ── Stat Cards ── */}
+        {/* ── Stat Cards — auto update ── */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           <StatCard
             label="Total Trucks"
@@ -366,7 +362,7 @@ export default function TruckOwner() {
           />
           <StatCard
             label="On Trip"
-            value={stats.activeTrips}
+            value={stats.onTrip}
             sub="Currently active"
             accent="blue"
             icon="📍"
@@ -422,13 +418,13 @@ export default function TruckOwner() {
                 </div>
               ) : trucks.length === 0 ? (
                 <p className="text-sm text-white/25 text-center mt-8">
-                  No trucks in fleet. Add your first truck!
+                  No trucks yet. Add your first truck!
                 </p>
               ) : (
                 trucks.map((truck) => (
                   <div
-                    key={truck._id || truck.id}
-                    className="p-4 rounded-xl transition-all duration-200"
+                    key={truck._id}
+                    className="p-4 rounded-xl"
                     style={{
                       background: "rgba(255,255,255,0.02)",
                       border: "1px solid rgba(255,255,255,0.06)",
@@ -447,31 +443,31 @@ export default function TruckOwner() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <span className="text-sm font-black text-white">
-                            {truck.number || truck.registrationNumber}
+                            {truck.plateNumber}
                           </span>
                           <span className="text-xs text-white/25">
-                            · {truck.type} · {truck.capacity}
-                            {truck.capacity && " Ton"}
+                            · {truck.model} ·{" "}
+                            {truck.capacity
+                              ? `${(truck.capacity / 1000).toFixed(0)} Ton`
+                              : "—"}
                           </span>
                         </div>
                         <p className="text-xs text-white/40">
-                          {truck.driver?.name || truck.driver || "No driver"} ·{" "}
-                          {truck.location || "—"}
+                          {truck.assignedDriver?.name || "No driver assigned"}
                         </p>
-                        {truck.trip && truck.trip !== "—" && (
-                          <p className="text-xs text-green-400 mt-1 font-semibold">
-                            📍 {truck.trip?.route || truck.trip}
+                        {truck.currentLocation?.lat && (
+                          <p className="text-xs text-blue-400 mt-1">
+                            📍 Live location available
+                          </p>
+                        )}
+                        {truck.totalEarnings > 0 && (
+                          <p className="text-xs text-orange-400 mt-1">
+                            ₹{truck.totalEarnings.toLocaleString()} earned
                           </p>
                         )}
                       </div>
-                      <div className="flex flex-col items-end gap-2">
-                        <Badge status={truck.status} />
-                        {truck.earning && truck.earning !== "—" && (
-                          <span className="text-xs text-orange-400 font-bold">
-                            {truck.earning}
-                          </span>
-                        )}
-                      </div>
+                      {/* Status auto-updates: available → active (on trip) → available (delivered) */}
+                      <Badge status={normalizeTruckStatus(truck.status)} />
                     </div>
                   </div>
                 ))
@@ -479,13 +475,13 @@ export default function TruckOwner() {
             </div>
           </div>
 
-          {/* ── Booking Requests ── */}
+          {/* ── Confirm Requests + Notifications ── */}
           <div style={glassCard}>
             <h2 className="text-sm font-black text-white uppercase tracking-widest mb-5">
-              Booking Requests
-              {requests.length > 0 && (
+              Confirm Requests
+              {pendingRequests.length > 0 && (
                 <span className="ml-2 text-xs px-2 py-0.5 rounded-full font-bold bg-orange-500/15 text-orange-300 border border-orange-500/25">
-                  {requests.length}
+                  {pendingRequests.length}
                 </span>
               )}
             </h2>
@@ -503,80 +499,109 @@ export default function TruckOwner() {
                   Retry
                 </button>
               </div>
-            ) : requests.length === 0 ? (
-              <p className="text-sm text-white/25 text-center mt-8">
-                No pending requests
-              </p>
+            ) : pendingRequests.length === 0 ? (
+              <div className="text-center mt-4 mb-4">
+                <p className="text-sm text-white/25">
+                  No pending confirmations
+                </p>
+                <p className="text-xs text-white/15 mt-1">
+                  Driver accepted requests appear here
+                </p>
+              </div>
             ) : (
-              <div className="flex flex-col gap-3">
-                {requests.map((req) => (
+              <div className="flex flex-col gap-3 mb-5">
+                {pendingRequests.map((req) => (
                   <div
-                    key={req._id || req.id}
+                    key={req._id}
                     className="rounded-xl p-4"
                     style={{
                       background: "rgba(255,255,255,0.03)",
-                      border: "1px solid rgba(255,255,255,0.07)",
+                      border: "1px solid rgba(34,197,94,0.15)",
                     }}
                   >
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-xs font-black text-white">
-                        #
-                        {(req._id || req.id)
-                          ?.toString()
-                          .slice(-5)
-                          .toUpperCase()}
+                        #{req._id?.slice(-5)?.toUpperCase()}
                       </span>
-                      <span className="text-xs font-bold text-orange-400">
-                        {req.amount
-                          ? `₹${req.amount}`
-                          : req.price
-                            ? `₹${req.price}`
-                            : "—"}
+                      <span className="text-xs font-bold text-green-400">
+                        Driver Accepted ✓
                       </span>
                     </div>
                     <p className="text-xs font-semibold text-white/70 mb-1">
-                      {req.from || req.origin || req.source} →{" "}
-                      {req.to || req.destination}
+                      {req.shipment?.origin ?? "—"} →{" "}
+                      {req.shipment?.destination ?? "—"}
                     </p>
                     <p className="text-xs text-white/35 mb-1">
-                      {req.goods || req.goodsType || req.cargoType} ·{" "}
-                      {req.weight}
-                      {req.weight && " Ton"}
+                      {req.shipment?.cargo?.description ?? "—"} ·{" "}
+                      {req.shipment?.cargo?.weight
+                        ? `${req.shipment.cargo.weight} kg`
+                        : "—"}
                     </p>
-                    <p className="text-xs text-white/25 mb-3">
-                      By {req.date || req.pickupDate || req.scheduledDate} ·{" "}
-                      {req.sender?.name || req.sender || req.senderName}
+                    <p className="text-xs text-white/25 mb-1">
+                      Driver: {req.driver?.name ?? "—"}
                     </p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() =>
-                          handleRequest(req._id || req.id, "accept")
-                        }
-                        className="flex-1 py-1.5 text-xs font-black rounded-lg transition hover:opacity-90"
-                        style={{
-                          background: "rgba(34,197,94,0.15)",
-                          border: "1px solid rgba(34,197,94,0.30)",
-                          color: "#86efac",
-                        }}
-                      >
-                        ✓ Accept
-                      </button>
-                      <button
-                        onClick={() =>
-                          handleRequest(req._id || req.id, "reject")
-                        }
-                        className="flex-1 py-1.5 text-xs font-black rounded-lg transition hover:opacity-90"
-                        style={{
-                          background: "rgba(239,68,68,0.15)",
-                          border: "1px solid rgba(239,68,68,0.30)",
-                          color: "#fca5a5",
-                        }}
-                      >
-                        ✗ Reject
-                      </button>
-                    </div>
+                    <p className="text-xs text-white/25 mb-1">
+                      Truck: {req.truck?.plateNumber ?? "—"}
+                    </p>
+                    <p className="text-xs text-white/20 mb-3">
+                      Sender: {req.sender?.name ?? "—"}
+                    </p>
+                    <button
+                      onClick={() => handleConfirm(req._id)}
+                      disabled={confirmingId === req._id}
+                      className="w-full py-2 text-xs font-black rounded-lg transition hover:opacity-90 disabled:opacity-50 text-white"
+                      style={{
+                        background: "linear-gradient(135deg, #22c55e, #16a34a)",
+                        boxShadow: "0 0 12px rgba(34,197,94,0.25)",
+                      }}
+                    >
+                      {confirmingId === req._id
+                        ? "Confirming..."
+                        : "✓ Confirm Trip"}
+                    </button>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* ── Recent Notifications ── */}
+            {notifications.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs font-black text-white/50 uppercase tracking-widest">
+                    Alerts
+                  </h3>
+                  <button
+                    onClick={async () => {
+                      await markAllNotificationsRead();
+                      fetchNotifications();
+                    }}
+                    className="text-xs text-white/30 hover:text-white/60 transition"
+                  >
+                    Mark all read
+                  </button>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {notifications.slice(0, 4).map((n) => (
+                    <div
+                      key={n._id}
+                      className="px-3 py-2 rounded-lg"
+                      style={{
+                        background: n.read
+                          ? "rgba(255,255,255,0.02)"
+                          : "rgba(34,197,94,0.06)",
+                        border: n.read
+                          ? "1px solid rgba(255,255,255,0.05)"
+                          : "1px solid rgba(34,197,94,0.15)",
+                      }}
+                    >
+                      <p className="text-xs text-white/60">{n.message}</p>
+                      <p className="text-xs text-white/25 mt-0.5">
+                        {new Date(n.createdAt).toLocaleString()}
+                      </p>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

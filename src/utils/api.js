@@ -203,6 +203,20 @@ export const logout = () => {
   window.location.href = "/login";
 };
 
+export const optimizeRoute = async (
+  origin,
+  destination,
+  truckType,
+  priority,
+) => {
+  const res = await fetch(`${BASE_URL}/routes/optimize`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ origin, destination, truckType, priority }),
+  });
+  return res.json();
+};
+
 export const getDashboardRoute = (role) => {
   const routes = {
     receiver: "/dashboard/receiver",

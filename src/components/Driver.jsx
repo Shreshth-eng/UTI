@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Sidebar from "../components/shared/Sidebar";
 import Topbar from "../components/shared/Topbar";
 import StatCard from "../components/shared/StatCard";
@@ -7,18 +7,22 @@ import TrackingTimeline from "../components/shared/TrackingTimeline";
 import {
   getMyProfile,
   getTrips,
-  getShipments,
   updateShipmentStatus,
   completeTrip,
   getUser,
+  getMyRequests,
+  respondToRequest,
 } from "../utils/api";
+
+const ORS_KEY = import.meta.env.VITE_ORS_API_KEY;
+const WEATHER_KEY = import.meta.env.VITE_WEATHER_API_KEY;
 
 const navItems = [
   { label: "Overview", icon: "⊞" },
+  { label: "Requests", icon: "📋" },
   { label: "Current Trip", icon: "🗺️" },
   { label: "Past Trips", icon: "📜" },
   { label: "Earnings", icon: "💰" },
-  { label: "Notifications", icon: "🔔" },
 ];
 
 const glassCard = {
@@ -30,65 +34,340 @@ const glassCard = {
   padding: "1.5rem",
 };
 
-// Map backend trip statuses to timeline-friendly labels
-const STATUS_LABELS = {
-  pending: "Pending",
-  "in-transit": "In Transit",
-  delivered: "Delivered",
-  delayed: "Delayed",
-  completed: "Completed",
-};
-
-// Map backend trip status to badge-compatible status
 const tripStatusToBadge = (status) => {
   const map = {
     "in-transit": "Active",
+    in_transit: "Active",
     pending: "Pending",
     delivered: "Delivered",
     completed: "Completed",
-    delayed: "Delayed",
   };
   return map[status] || status;
 };
 
-// Build timeline steps from a shipment's tracking history
 const buildTimelineSteps = (shipment) => {
   if (!shipment) return [];
-  const steps = [];
-
-  steps.push({
-    label: "Trip Started",
-    time: shipment.createdAt
-      ? new Date(shipment.createdAt).toLocaleString()
-      : "—",
-    done: true,
-  });
-
-  if (shipment.trackingHistory && shipment.trackingHistory.length > 0) {
-    shipment.trackingHistory.forEach((entry) => {
+  const steps = [
+    {
+      label: "Trip Started",
+      time: shipment.createdAt
+        ? new Date(shipment.createdAt).toLocaleString()
+        : "—",
+      done: true,
+    },
+  ];
+  if (shipment.checkpoints?.length > 0) {
+    shipment.checkpoints.forEach((e) =>
       steps.push({
-        label: entry.checkpointMessage || entry.status,
-        time: entry.timestamp
-          ? new Date(entry.timestamp).toLocaleString()
-          : "—",
+        label: e.message || "Update",
+        time: e.timestamp ? new Date(e.timestamp).toLocaleString() : "—",
         done: true,
-      });
-    });
+      }),
+    );
   }
-
   if (shipment.status !== "delivered" && shipment.status !== "completed") {
     steps.push({
       label: "Delivery Pending",
       time: shipment.estimatedDelivery
-        ? new Date(shipment.estimatedDelivery).toLocaleString()
-        : "ETA",
+        ? new Date(shipment.estimatedDelivery).toLocaleDateString()
+        : "ETA TBD",
       done: false,
     });
   }
-
   return steps;
 };
 
+// ── Route Optimization Panel ──────────────────────────────────────
+function RoutePanel({ shipment }) {
+  const [routeData, setRouteData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [lastUpdated, setLastUpdated] = useState(null);
+
+  const fetchRoute = useCallback(async () => {
+    if (!shipment?.origin || !shipment?.destination) return;
+    setLoading(true);
+    setError("");
+    try {
+      // Step 1: Geocode origin
+      const geoOrigin = await fetch(
+        `https://api.openrouteservice.org/geocode/search?api_key=${ORS_KEY}&text=${encodeURIComponent(shipment.origin)}&size=1`,
+      ).then((r) => r.json());
+      const originCoords = geoOrigin.features?.[0]?.geometry?.coordinates;
+
+      // Step 2: Geocode destination
+      const geoDest = await fetch(
+        `https://api.openrouteservice.org/geocode/search?api_key=${ORS_KEY}&text=${encodeURIComponent(shipment.destination)}&size=1`,
+      ).then((r) => r.json());
+      const destCoords = geoDest.features?.[0]?.geometry?.coordinates;
+
+      if (!originCoords || !destCoords) {
+        setError("Could not find coordinates for origin or destination.");
+        return;
+      }
+
+      // Step 3: Get optimized route from ORS
+      // Use HGV profile to avoid no-entry zones for trucks
+      const orsRes = await fetch(
+        "https://api.openrouteservice.org/v2/directions/driving-hgv",
+        {
+          method: "POST",
+          headers: {
+            Authorization: ORS_KEY,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            coordinates: [originCoords, destCoords],
+            instructions: true,
+            language: "en",
+            units: "km",
+            options: {
+              vehicle_type: "hgv",
+              weight: 10,
+              height: 4.0,
+              width: 2.5,
+            },
+          }),
+        },
+      ).then((r) => r.json());
+
+      const route = orsRes.routes?.[0];
+      if (!route) {
+        setError("No route found. Check origin/destination names.");
+        return;
+      }
+
+      const summary = route.summary;
+      const steps = route.segments?.[0]?.steps?.slice(0, 6) || [];
+
+      // Step 4: Get weather at origin
+      let weather = null;
+      let warnings = [];
+      try {
+        const wRes = await fetch(
+          `https://api.openweathermap.org/data/2.5/weather?lat=${originCoords[1]}&lon=${originCoords[0]}&appid=${WEATHER_KEY}&units=metric`,
+        ).then((r) => r.json());
+        weather = {
+          condition: wRes.weather?.[0]?.main || "Clear",
+          description: wRes.weather?.[0]?.description || "",
+          temp: Math.round(wRes.main?.temp),
+          windSpeed: wRes.wind?.speed,
+          visibility: wRes.visibility,
+        };
+        const bad = [
+          "Rain",
+          "Snow",
+          "Thunderstorm",
+          "Fog",
+          "Mist",
+          "Haze",
+          "Drizzle",
+        ];
+        if (bad.includes(weather.condition))
+          warnings.push(`⚠️ ${weather.condition} on route — drive carefully`);
+        if (weather.windSpeed > 15)
+          warnings.push(`💨 High winds: ${weather.windSpeed} m/s`);
+        if (weather.visibility < 1000)
+          warnings.push(
+            `🌫️ Low visibility: ${(weather.visibility / 1000).toFixed(1)} km`,
+          );
+      } catch {
+        /* weather fail silently */
+      }
+
+      setRouteData({
+        distanceKm: parseFloat(summary.distance.toFixed(1)),
+        durationHours: parseFloat((summary.duration / 3600).toFixed(1)),
+        durationMin: Math.round(summary.duration / 60),
+        directions: steps.map((s) => ({
+          instruction: s.instruction,
+          distanceKm: parseFloat((s.distance / 1000).toFixed(1)),
+        })),
+        weather,
+        warnings,
+      });
+      setLastUpdated(new Date().toLocaleTimeString());
+    } catch (err) {
+      setError("Route optimization failed. Check API key or city names.");
+    } finally {
+      setLoading(false);
+    }
+  }, [shipment]);
+
+  // Auto-fetch on mount + every 10 minutes
+  useEffect(() => {
+    fetchRoute();
+    const interval = setInterval(fetchRoute, 10 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchRoute]);
+
+  return (
+    <div style={glassCard}>
+      <div className="flex items-center justify-between mb-5">
+        <h2 className="text-sm font-black text-white uppercase tracking-widest">
+          Live Route Optimization
+        </h2>
+        <div className="flex items-center gap-3">
+          {lastUpdated && (
+            <span className="text-xs text-white/25">Updated {lastUpdated}</span>
+          )}
+          <button
+            onClick={fetchRoute}
+            disabled={loading}
+            className="text-xs font-black text-white px-3 py-1.5 rounded-xl transition hover:opacity-90 disabled:opacity-50"
+            style={{ background: "linear-gradient(135deg, #a855f7, #7c3aed)" }}
+          >
+            {loading ? "Calculating..." : "Recalculate"}
+          </button>
+        </div>
+      </div>
+
+      {/* Route info: origin → destination */}
+      <div className="flex items-center gap-2 mb-4">
+        <span className="text-xs font-bold text-white/70">
+          {shipment.origin}
+        </span>
+        <span className="text-white/30 text-xs">→</span>
+        <span className="text-xs font-bold text-white/70">
+          {shipment.destination}
+        </span>
+        <span
+          className="ml-auto text-xs px-2 py-0.5 rounded-full font-semibold"
+          style={{
+            background: "rgba(168,85,247,0.15)",
+            border: "1px solid rgba(168,85,247,0.30)",
+            color: "#d8b4fe",
+          }}
+        >
+          HGV Route
+        </span>
+      </div>
+
+      {loading && !routeData && (
+        <div className="text-center py-8">
+          <div className="w-8 h-8 border-2 border-purple-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-white/40 text-xs animate-pulse">
+            Optimizing route — avoiding no-entry zones...
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <div
+          className="px-4 py-3 rounded-xl text-xs font-semibold text-red-300 mb-4"
+          style={{
+            background: "rgba(239,68,68,0.10)",
+            border: "1px solid rgba(239,68,68,0.25)",
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {routeData && (
+        <>
+          {/* Stats row */}
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            <div
+              className="rounded-xl p-3 text-center"
+              style={{
+                background: "rgba(168,85,247,0.08)",
+                border: "1px solid rgba(168,85,247,0.20)",
+              }}
+            >
+              <p className="text-xs text-white/40 mb-1">Distance</p>
+              <p className="text-sm font-black text-purple-300">
+                {routeData.distanceKm} km
+              </p>
+            </div>
+            <div
+              className="rounded-xl p-3 text-center"
+              style={{
+                background: "rgba(168,85,247,0.08)",
+                border: "1px solid rgba(168,85,247,0.20)",
+              }}
+            >
+              <p className="text-xs text-white/40 mb-1">ETA</p>
+              <p className="text-sm font-black text-purple-300">
+                {routeData.durationHours} hrs
+              </p>
+            </div>
+            <div
+              className="rounded-xl p-3 text-center"
+              style={{
+                background: routeData.weather
+                  ? "rgba(59,130,246,0.08)"
+                  : "rgba(255,255,255,0.03)",
+                border: "1px solid rgba(59,130,246,0.20)",
+              }}
+            >
+              <p className="text-xs text-white/40 mb-1">Weather</p>
+              <p className="text-sm font-black text-blue-300">
+                {routeData.weather?.condition ?? "—"}{" "}
+                {routeData.weather?.temp != null
+                  ? `${routeData.weather.temp}°C`
+                  : ""}
+              </p>
+            </div>
+          </div>
+
+          {/* Warnings */}
+          {routeData.warnings.length > 0 && (
+            <div className="mb-4 flex flex-col gap-2">
+              {routeData.warnings.map((w, i) => (
+                <div
+                  key={i}
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-orange-300"
+                  style={{
+                    background: "rgba(249,115,22,0.10)",
+                    border: "1px solid rgba(249,115,22,0.25)",
+                  }}
+                >
+                  {w}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Turn-by-turn directions */}
+          <div>
+            <p className="text-xs text-white/30 uppercase tracking-widest font-semibold mb-2">
+              Turn-by-turn
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {routeData.directions.map((d, i) => (
+                <div
+                  key={i}
+                  className="flex items-start gap-3 px-3 py-2 rounded-lg"
+                  style={{
+                    background: "rgba(255,255,255,0.02)",
+                    border: "1px solid rgba(255,255,255,0.05)",
+                  }}
+                >
+                  <span className="text-xs text-purple-400 font-black shrink-0 mt-0.5">
+                    {i + 1}
+                  </span>
+                  <p className="text-xs text-white/60 flex-1">
+                    {d.instruction}
+                  </p>
+                  <span className="text-xs text-white/25 shrink-0">
+                    {d.distanceKm} km
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <p className="text-xs text-white/20 mt-3 text-center">
+            Auto-recalculates every 10 min · HGV no-entry zones avoided
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Update Status Modal ───────────────────────────────────────────
 function UpdateStatusModal({ shipmentId, tripId, onClose, onUpdated }) {
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(false);
@@ -96,12 +375,12 @@ function UpdateStatusModal({ shipmentId, tripId, onClose, onUpdated }) {
   const statusOptions = [
     {
       label: "Reached Checkpoint",
-      value: "in-transit",
+      value: "in_transit",
       message: "Reached Checkpoint",
     },
     {
       label: "Delayed — Traffic",
-      value: "delayed",
+      value: "in_transit",
       message: "Delayed due to traffic",
     },
     {
@@ -109,7 +388,7 @@ function UpdateStatusModal({ shipmentId, tripId, onClose, onUpdated }) {
       value: "delivered",
       message: "Delivered Successfully",
     },
-    { label: "Issue Reported", value: "in-transit", message: "Issue Reported" },
+    { label: "Issue Reported", value: "in_transit", message: "Issue Reported" },
   ];
 
   const handleUpdate = async () => {
@@ -120,16 +399,13 @@ function UpdateStatusModal({ shipmentId, tripId, onClose, onUpdated }) {
     const opt = statusOptions.find((o) => o.label === selected);
     setLoading(true);
     try {
-      if (opt.value === "delivered" && tripId) {
-        await completeTrip(tripId);
-      }
-      if (shipmentId) {
+      if (opt.value === "delivered" && tripId) await completeTrip(tripId);
+      if (shipmentId)
         await updateShipmentStatus(shipmentId, opt.value, opt.message);
-      }
       onUpdated();
       onClose();
-    } catch (err) {
-      alert("Failed to update status. Please try again.");
+    } catch {
+      alert("Failed to update status.");
     } finally {
       setLoading(false);
     }
@@ -167,7 +443,7 @@ function UpdateStatusModal({ shipmentId, tripId, onClose, onUpdated }) {
               <button
                 key={s.label}
                 onClick={() => setSelected(s.label)}
-                className="w-full text-left px-4 py-3 rounded-xl text-sm font-semibold transition-all duration-200"
+                className="w-full text-left px-4 py-3 rounded-xl text-sm font-semibold transition-all"
                 style={{
                   background:
                     selected === s.label
@@ -200,7 +476,6 @@ function UpdateStatusModal({ shipmentId, tripId, onClose, onUpdated }) {
               className="flex-1 py-3 text-white text-sm font-black rounded-xl transition hover:opacity-90"
               style={{
                 background: "linear-gradient(135deg, #a855f7, #7c3aed)",
-                boxShadow: "0 0 20px rgba(168,85,247,0.3)",
                 opacity: loading ? 0.7 : 1,
               }}
             >
@@ -213,80 +488,93 @@ function UpdateStatusModal({ shipmentId, tripId, onClose, onUpdated }) {
   );
 }
 
+// ── Main Driver Dashboard ─────────────────────────────────────────
 export default function DriverDashboard() {
   const [activeNav, setActiveNav] = useState("Overview");
   const [showModal, setShowModal] = useState(false);
-
-  // Backend state
   const [profile, setProfile] = useState(null);
   const [trips, setTrips] = useState([]);
-  const [shipments, setShipments] = useState([]);
+  const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [respondingId, setRespondingId] = useState(null);
 
   const fetchData = async () => {
     try {
       setLoading(true);
       setError(null);
-      const [profileRes, tripsRes, shipmentsRes] = await Promise.all([
+      const [profileRes, tripsRes, requestsRes] = await Promise.all([
         getMyProfile(),
         getTrips(),
-        getShipments(),
+        getMyRequests(),
       ]);
       setProfile(profileRes);
       setTrips(Array.isArray(tripsRes) ? tripsRes : tripsRes.trips || []);
-      setShipments(
-        Array.isArray(shipmentsRes)
-          ? shipmentsRes
-          : shipmentsRes.shipments || [],
+      setRequests(
+        Array.isArray(requestsRes)
+          ? requestsRes.filter((r) => r.status === "pending")
+          : [],
       );
-    } catch (err) {
+    } catch {
       setError("Failed to load dashboard data.");
     } finally {
       setLoading(false);
     }
   };
 
+  // Poll for new requests every 30 seconds
   useEffect(() => {
     fetchData();
+    const interval = setInterval(async () => {
+      try {
+        const res = await getMyRequests();
+        const list = Array.isArray(res)
+          ? res.filter((r) => r.status === "pending")
+          : [];
+        setRequests(list);
+      } catch {
+        /* silent */
+      }
+    }, 30000);
+    return () => clearInterval(interval);
   }, []);
 
-  // ── Derived data ────────────────────────────────────────────────
+  const handleRespond = async (requestId, status) => {
+    setRespondingId(requestId);
+    try {
+      await respondToRequest(requestId, status);
+      setRequests((prev) => prev.filter((r) => r._id !== requestId));
+      if (status === "accepted") fetchData(); // refresh trips
+    } catch {
+      alert("Failed to respond. Try again.");
+    } finally {
+      setRespondingId(null);
+    }
+  };
 
-  // Current (active) trip
+  // Current active trip
   const currentTrip = trips.find(
-    (t) => t.status === "in-transit" || t.status === "pending",
+    (t) =>
+      t.status === "in-transit" ||
+      t.status === "in_transit" ||
+      t.status === "pending",
   );
-
-  // Past trips (completed / delivered)
   const pastTrips = trips.filter(
     (t) => t.status === "completed" || t.status === "delivered",
   );
 
   // Shipment linked to current trip
-  const currentShipment = currentTrip
-    ? shipments.find(
-        (s) => s._id === currentTrip.shipment || s.tripId === currentTrip._id,
-      )
-    : null;
+  const currentShipment =
+    currentTrip?.shipment && typeof currentTrip.shipment === "object"
+      ? currentTrip.shipment
+      : null;
 
-  // Timeline steps for current shipment
   const timelineSteps = buildTimelineSteps(currentShipment);
-
-  // Stats
   const totalEarned = pastTrips.reduce(
     (sum, t) => sum + (t.fare || t.earnings || 0),
     0,
   );
-  const rating = profile?.rating ?? "—";
-  const reviewCount = profile?.reviewCount ?? 0;
 
-  // Progress calculation
-  const coveredKm = currentTrip?.coveredDistance ?? currentTrip?.covered ?? 0;
-  const totalKm = currentTrip?.distance ?? currentTrip?.totalDistance ?? 1;
-  const progress = Math.min(100, Math.round((coveredKm / totalKm) * 100));
-
-  // User info — fall back to localStorage while profile loads
   const localUser = getUser();
   const userName = profile?.name ?? localUser?.name ?? "Driver";
   const userPhone = profile?.phone ?? localUser?.phone ?? "";
@@ -297,20 +585,13 @@ export default function DriverDashboard() {
     .toUpperCase()
     .slice(0, 2);
 
-  // ── Notifications from recent tracking events ───────────────────
-  const notifications = shipments
-    .flatMap((s) =>
-      (s.trackingHistory || []).slice(-1).map((h) => ({
-        id: s._id,
-        message: h.checkpointMessage || h.status,
-        time: h.timestamp ? new Date(h.timestamp).toLocaleString() : "",
-      })),
-    )
-    .slice(0, 5);
+  const notifications = requests.map((r) => ({
+    id: r._id,
+    message: `New request: ${r.shipment?.origin ?? "—"} → ${r.shipment?.destination ?? "—"}`,
+    time: new Date(r.createdAt).toLocaleString(),
+  }));
 
-  // ── Render ──────────────────────────────────────────────────────
-
-  if (loading) {
+  if (loading)
     return (
       <div
         className="flex items-center justify-center min-h-screen"
@@ -321,9 +602,7 @@ export default function DriverDashboard() {
         </p>
       </div>
     );
-  }
-
-  if (error) {
+  if (error)
     return (
       <div
         className="flex items-center justify-center min-h-screen"
@@ -333,14 +612,13 @@ export default function DriverDashboard() {
           <p className="text-red-400 text-sm mb-3">{error}</p>
           <button
             onClick={fetchData}
-            className="text-xs text-white/50 px-4 py-2 rounded-xl border border-white/10 hover:bg-white/5 transition"
+            className="text-xs text-white/50 px-4 py-2 rounded-xl border border-white/10"
           >
             Retry
           </button>
         </div>
       </div>
     );
-  }
 
   return (
     <div
@@ -365,7 +643,7 @@ export default function DriverDashboard() {
           notifications={notifications}
         />
 
-        {/* ── Stat Cards ── */}
+        {/* Stat Cards */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           <StatCard
             label="Trips Completed"
@@ -373,6 +651,13 @@ export default function DriverDashboard() {
             sub="All time"
             accent="white"
             icon="🏁"
+          />
+          <StatCard
+            label="Pending Requests"
+            value={requests.length}
+            sub="Awaiting response"
+            accent="orange"
+            icon="📋"
           />
           <StatCard
             label="Current Trip"
@@ -384,18 +669,82 @@ export default function DriverDashboard() {
           <StatCard
             label="Total Earned"
             value={`₹${totalEarned.toLocaleString()}`}
-            sub="This year"
+            sub="All time"
             accent="green"
             icon="💰"
           />
-          <StatCard
-            label="My Rating"
-            value={rating !== "—" ? `${rating} ⭐` : "—"}
-            sub={reviewCount ? `${reviewCount} reviews` : "No reviews yet"}
-            accent="orange"
-            icon="🏆"
-          />
         </div>
+
+        {/* ── Incoming Requests ── */}
+        {requests.length > 0 && (
+          <div style={glassCard} className="mb-5">
+            <h2 className="text-sm font-black text-white uppercase tracking-widest mb-4">
+              Incoming Requests
+              <span className="ml-2 text-xs px-2 py-0.5 rounded-full font-bold bg-orange-500/15 text-orange-300 border border-orange-500/25">
+                {requests.length}
+              </span>
+            </h2>
+            <div className="grid grid-cols-2 gap-3">
+              {requests.map((req) => (
+                <div
+                  key={req._id}
+                  className="p-4 rounded-xl"
+                  style={{
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                  }}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-black text-white">
+                      #{req._id?.slice(-5)?.toUpperCase()}
+                    </span>
+                    <span className="text-xs text-orange-400 font-bold">
+                      {req.shipment?.cargo?.weight
+                        ? `${req.shipment.cargo.weight} kg`
+                        : "—"}
+                    </span>
+                  </div>
+                  <p className="text-xs font-semibold text-white/70 mb-1">
+                    {req.shipment?.origin ?? "—"} →{" "}
+                    {req.shipment?.destination ?? "—"}
+                  </p>
+                  <p className="text-xs text-white/35 mb-1">
+                    {req.shipment?.cargo?.description ?? "—"}
+                  </p>
+                  <p className="text-xs text-white/25 mb-3">
+                    From: {req.sender?.name ?? "—"}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleRespond(req._id, "accepted")}
+                      disabled={respondingId === req._id}
+                      className="flex-1 py-1.5 text-xs font-black rounded-lg transition hover:opacity-90 disabled:opacity-50"
+                      style={{
+                        background: "rgba(34,197,94,0.15)",
+                        border: "1px solid rgba(34,197,94,0.30)",
+                        color: "#86efac",
+                      }}
+                    >
+                      {respondingId === req._id ? "..." : "✓ Accept"}
+                    </button>
+                    <button
+                      onClick={() => handleRespond(req._id, "rejected")}
+                      disabled={respondingId === req._id}
+                      className="flex-1 py-1.5 text-xs font-black rounded-lg transition hover:opacity-90 disabled:opacity-50"
+                      style={{
+                        background: "rgba(239,68,68,0.15)",
+                        border: "1px solid rgba(239,68,68,0.30)",
+                        color: "#fca5a5",
+                      }}
+                    >
+                      {respondingId === req._id ? "..." : "✗ Reject"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ── Current Trip + Timeline ── */}
         <div className="grid grid-cols-5 gap-5 mb-5">
@@ -426,107 +775,45 @@ export default function DriverDashboard() {
             </div>
 
             {currentTrip ? (
-              <>
-                <div className="grid grid-cols-3 gap-3 mb-5">
-                  {[
-                    [
-                      "Trip ID",
-                      currentTrip._id?.slice(-6)?.toUpperCase() ?? "—",
-                    ],
-                    [
-                      "Route",
-                      `${currentTrip.from ?? currentShipment?.origin ?? "—"} → ${currentTrip.to ?? currentShipment?.destination ?? "—"}`,
-                    ],
-                    [
-                      "ETA",
-                      currentTrip.estimatedArrival
-                        ? new Date(
-                            currentTrip.estimatedArrival,
-                          ).toLocaleDateString()
-                        : currentShipment?.estimatedDelivery
-                          ? new Date(
-                              currentShipment.estimatedDelivery,
-                            ).toLocaleDateString()
-                          : "—",
-                    ],
-                    [
-                      "Goods",
-                      currentShipment?.goodsType ??
-                        currentShipment?.description ??
-                        "—",
-                    ],
-                    [
-                      "Weight",
-                      currentShipment?.weight
-                        ? `${currentShipment.weight} kg`
-                        : "—",
-                    ],
-                    [
-                      "Truck",
-                      currentTrip.truck?.registrationNumber ??
-                        currentTrip.truckNumber ??
-                        "—",
-                    ],
-                    ["Sender", currentShipment?.sender?.name ?? "—"],
-                    ["Receiver", currentShipment?.receiver?.name ?? "—"],
-                    [
-                      "Started",
-                      currentTrip.startTime
-                        ? new Date(currentTrip.startTime).toLocaleString()
-                        : currentTrip.createdAt
-                          ? new Date(currentTrip.createdAt).toLocaleString()
-                          : "—",
-                    ],
-                  ].map(([k, v]) => (
-                    <div
-                      key={k}
-                      className="rounded-xl p-3"
-                      style={{
-                        background: "rgba(255,255,255,0.03)",
-                        border: "1px solid rgba(255,255,255,0.06)",
-                      }}
-                    >
-                      <p className="text-xs text-white/30 uppercase tracking-wider mb-1">
-                        {k}
-                      </p>
-                      <p className="text-xs font-bold text-white">{v}</p>
-                    </div>
-                  ))}
-                </div>
-
-                <div
-                  className="rounded-xl p-4"
-                  style={{
-                    background: "rgba(168,85,247,0.05)",
-                    border: "1px solid rgba(168,85,247,0.15)",
-                  }}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-xs text-white/40 uppercase tracking-widest font-semibold">
-                      Trip Progress
-                    </p>
-                    <p className="text-xs font-black text-purple-400">
-                      {coveredKm} km / {totalKm} km
-                    </p>
-                  </div>
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  ["Trip ID", currentTrip._id?.slice(-6)?.toUpperCase() ?? "—"],
+                  [
+                    "Route",
+                    `${currentShipment?.origin ?? "—"} → ${currentShipment?.destination ?? "—"}`,
+                  ],
+                  [
+                    "ETA",
+                    currentShipment?.estimatedDelivery
+                      ? new Date(
+                          currentShipment.estimatedDelivery,
+                        ).toLocaleDateString()
+                      : "—",
+                  ],
+                  ["Cargo", currentShipment?.cargo?.description ?? "—"],
+                  [
+                    "Weight",
+                    currentShipment?.cargo?.weight
+                      ? `${currentShipment.cargo.weight} kg`
+                      : "—",
+                  ],
+                  ["Receiver", currentShipment?.receiverName ?? "—"],
+                ].map(([k, v]) => (
                   <div
-                    className="w-full h-2 rounded-full overflow-hidden"
-                    style={{ background: "rgba(255,255,255,0.08)" }}
+                    key={k}
+                    className="rounded-xl p-3"
+                    style={{
+                      background: "rgba(255,255,255,0.03)",
+                      border: "1px solid rgba(255,255,255,0.06)",
+                    }}
                   >
-                    <div
-                      className="h-full rounded-full transition-all duration-700"
-                      style={{
-                        width: `${progress}%`,
-                        background: "linear-gradient(90deg, #7c3aed, #a855f7)",
-                        boxShadow: "0 0 10px rgba(168,85,247,0.5)",
-                      }}
-                    />
+                    <p className="text-xs text-white/30 uppercase tracking-wider mb-1">
+                      {k}
+                    </p>
+                    <p className="text-xs font-bold text-white">{v}</p>
                   </div>
-                  <p className="text-xs text-white/25 mt-2">
-                    {progress}% of journey completed
-                  </p>
-                </div>
-              </>
+                ))}
+              </div>
             ) : (
               <div className="flex items-center justify-center h-40">
                 <p className="text-white/30 text-sm">No active trip assigned</p>
@@ -548,6 +835,13 @@ export default function DriverDashboard() {
           </div>
         </div>
 
+        {/* ── Route Optimization — only when trip is active ── */}
+        {currentTrip && currentShipment && (
+          <div className="mb-5">
+            <RoutePanel shipment={currentShipment} />
+          </div>
+        )}
+
         {/* ── Past Trips ── */}
         <div style={glassCard}>
           <h2 className="text-sm font-black text-white uppercase tracking-widest mb-5">
@@ -555,51 +849,35 @@ export default function DriverDashboard() {
           </h2>
           {pastTrips.length > 0 ? (
             <div className="grid grid-cols-3 gap-4">
-              {pastTrips.map((t) => {
-                const linkedShipment = shipments.find(
-                  (s) => s._id === t.shipment || s.tripId === t._id,
-                );
-                return (
-                  <div
-                    key={t._id}
-                    className="rounded-xl p-4"
-                    style={{
-                      background: "rgba(255,255,255,0.02)",
-                      border: "1px solid rgba(255,255,255,0.06)",
-                    }}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-black text-white">
-                        #{t._id?.slice(-6)?.toUpperCase() ?? "—"}
-                      </span>
-                      <Badge status={tripStatusToBadge(t.status)} />
-                    </div>
-                    <p className="text-xs text-white/50 mb-1">
-                      {t.from ?? linkedShipment?.origin ?? "—"} →{" "}
-                      {t.to ?? linkedShipment?.destination ?? "—"}
-                    </p>
-                    <p className="text-xs text-white/25 mb-3">
-                      {t.completedAt
-                        ? new Date(t.completedAt).toLocaleDateString()
-                        : t.updatedAt
-                          ? new Date(t.updatedAt).toLocaleDateString()
-                          : "—"}
-                    </p>
-                    <div className="flex items-center justify-between">
-                      <span className="text-base font-black text-green-400">
-                        ₹{(t.fare ?? t.earnings ?? 0).toLocaleString()}
-                      </span>
-                      {t.rating ? (
-                        <span className="text-sm">
-                          {"⭐".repeat(Math.min(t.rating, 5))}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-white/25">No rating</span>
-                      )}
-                    </div>
+              {pastTrips.map((t) => (
+                <div
+                  key={t._id}
+                  className="rounded-xl p-4"
+                  style={{
+                    background: "rgba(255,255,255,0.02)",
+                    border: "1px solid rgba(255,255,255,0.06)",
+                  }}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-black text-white">
+                      #{t._id?.slice(-6)?.toUpperCase() ?? "—"}
+                    </span>
+                    <Badge status={tripStatusToBadge(t.status)} />
                   </div>
-                );
-              })}
+                  <p className="text-xs text-white/50 mb-1">
+                    {t.shipment?.origin ?? "—"} →{" "}
+                    {t.shipment?.destination ?? "—"}
+                  </p>
+                  <p className="text-xs text-white/25 mb-3">
+                    {t.updatedAt
+                      ? new Date(t.updatedAt).toLocaleDateString()
+                      : "—"}
+                  </p>
+                  <span className="text-base font-black text-green-400">
+                    ₹{(t.fare ?? t.earnings ?? 0).toLocaleString()}
+                  </span>
+                </div>
+              ))}
             </div>
           ) : (
             <div className="flex items-center justify-center h-24">

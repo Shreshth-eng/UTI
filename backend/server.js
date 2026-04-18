@@ -18,6 +18,7 @@ app.use("/api/trucks", require("./routes/trucks"));
 app.use("/api/trips", require("./routes/trips"));
 app.use("/api/requests", require("./routes/requests")); // ← NAYA
 app.use("/api/notifications", require("./routes/notifications")); // ← NAYA
+app.use("/api/routes", require("./routes/routes")); // ← ADD
 
 // Health check
 app.get("/", (req, res) => {
