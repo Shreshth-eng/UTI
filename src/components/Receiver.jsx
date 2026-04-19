@@ -1,14 +1,20 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Sidebar from "../components/shared/Sidebar";
 import Topbar from "../components/shared/Topbar";
 import StatCard from "../components/shared/StatCard";
 import Badge from "../components/shared/Badge";
 import TrackingTimeline from "../components/shared/TrackingTimeline";
-import { getShipments, createShipment, getUser } from "../utils/api";
+import {
+  getShipments,
+  getMyNotifications,
+  updateShipmentStatus,
+  getUser,
+  getMyProfile,
+} from "../utils/api";
 
 const navItems = [
   { label: "Overview", icon: "⊞" },
-  { label: "My Requests", icon: "📦" },
+  { label: "My Deliveries", icon: "📦" },
   { label: "Track Delivery", icon: "📍" },
   { label: "Notifications", icon: "🔔" },
 ];
@@ -22,192 +28,6 @@ const glassCard = {
   padding: "1.5rem",
 };
 
-const inputStyle = {
-  width: "100%",
-  padding: "0.75rem 1rem",
-  background: "rgba(255,255,255,0.05)",
-  border: "1px solid rgba(255,255,255,0.10)",
-  borderRadius: "0.75rem",
-  color: "white",
-  fontSize: "0.875rem",
-  outline: "none",
-};
-
-function NewRequestModal({ onClose, onSubmitted }) {
-  const [form, setForm] = useState({
-    from: "",
-    to: "",
-    goods: "",
-    weight: "",
-    date: "",
-    notes: "",
-  });
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState("");
-
-  const handle = (e) => setForm({ ...form, [e.target.name]: e.target.value });
-
-  const handleSubmit = async () => {
-    setFormError("");
-    if (!form.from || !form.to || !form.goods || !form.weight) {
-      setFormError("Please fill all required fields");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const data = await createShipment({
-        receiverName: "Self",
-        origin: form.from,
-        destination: form.to,
-        cargo: {
-          description: form.goods,
-          weight: Number(form.weight),
-        },
-      });
-      if (data.shipment) {
-        onSubmitted(); // refresh list
-        onClose();
-      } else {
-        setFormError(data.message || "Request submit nahi hua");
-      }
-    } catch {
-      setFormError("Server error. Dobara try karo.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 flex items-center justify-center z-50 px-4"
-      style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
-    >
-      <div
-        className="w-full max-w-md relative overflow-hidden"
-        style={{
-          background:
-            "linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))",
-          border: "1px solid rgba(255,255,255,0.12)",
-          borderRadius: "1.5rem",
-          padding: "2rem",
-          backdropFilter: "blur(30px)",
-        }}
-      >
-        <div className="absolute top-0 left-0 w-48 h-48 bg-blue-600/10 rounded-full blur-[80px] pointer-events-none" />
-
-        <div className="relative z-10">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-xl font-black text-white">
-              New Delivery Request
-            </h2>
-            <button
-              onClick={onClose}
-              className="w-8 h-8 rounded-full flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition text-xl"
-            >
-              ×
-            </button>
-          </div>
-
-          {formError && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-400 text-sm px-4 py-3 rounded-xl mb-4">
-              {formError}
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            {[
-              ["from", "From City", "e.g. Delhi"],
-              ["to", "To City", "e.g. Amritsar"],
-            ].map(([name, label, ph]) => (
-              <div key={name}>
-                <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">
-                  {label}
-                </label>
-                <input
-                  name={name}
-                  value={form[name]}
-                  onChange={handle}
-                  placeholder={ph}
-                  style={inputStyle}
-                />
-              </div>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            {[
-              ["goods", "Goods Type", "e.g. Electronics"],
-              ["weight", "Weight (kg)", "e.g. 500"],
-            ].map(([name, label, ph]) => (
-              <div key={name}>
-                <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">
-                  {label}
-                </label>
-                <input
-                  name={name}
-                  value={form[name]}
-                  onChange={handle}
-                  placeholder={ph}
-                  type={name === "weight" ? "number" : "text"}
-                  style={inputStyle}
-                />
-              </div>
-            ))}
-          </div>
-
-          <div className="mb-3">
-            <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">
-              Required By
-            </label>
-            <input
-              name="date"
-              type="date"
-              value={form.date}
-              onChange={handle}
-              style={inputStyle}
-            />
-          </div>
-
-          <div className="mb-6">
-            <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">
-              Notes
-            </label>
-            <textarea
-              name="notes"
-              rows={3}
-              value={form.notes}
-              onChange={handle}
-              placeholder="Any special instructions..."
-              style={{ ...inputStyle, resize: "none" }}
-            />
-          </div>
-
-          <div className="flex gap-3">
-            <button
-              onClick={onClose}
-              className="flex-1 py-3 text-white/50 text-sm font-semibold rounded-xl transition hover:bg-white/5"
-              style={{ border: "1px solid rgba(255,255,255,0.10)" }}
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSubmit}
-              disabled={submitting}
-              className="flex-1 py-3 text-white text-sm font-black rounded-xl transition hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{
-                background: "linear-gradient(135deg, #3b82f6, #2563eb)",
-                boxShadow: "0 0 20px rgba(59,130,246,0.3)",
-              }}
-            >
-              {submitting ? "Submitting..." : "Submit Request"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // Backend status → display label
 const formatStatus = (s) =>
   ({
@@ -217,77 +37,185 @@ const formatStatus = (s) =>
     cancelled: "Cancelled",
   })[s] || s;
 
+// Build timeline from checkpoints
+const buildTimeline = (shipment) => {
+  if (!shipment) return [];
+  const steps = [];
+
+  steps.push({
+    label: "Order Placed",
+    time: shipment.createdAt
+      ? new Date(shipment.createdAt).toLocaleString()
+      : "—",
+    done: true,
+  });
+
+  if (shipment.checkpoints?.length > 0) {
+    shipment.checkpoints.forEach((cp) => {
+      steps.push({
+        label: cp.message || "Update",
+        time: cp.timestamp ? new Date(cp.timestamp).toLocaleString() : "—",
+        done: true,
+      });
+    });
+  }
+
+  if (shipment.status !== "delivered" && shipment.status !== "cancelled") {
+    steps.push({
+      label: "Awaiting Delivery",
+      time: shipment.estimatedDelivery
+        ? new Date(shipment.estimatedDelivery).toLocaleDateString()
+        : "ETA TBD",
+      done: false,
+    });
+  }
+
+  if (shipment.status === "delivered") {
+    steps.push({ label: "Delivered Successfully", time: "", done: true });
+  }
+
+  return steps;
+};
+
 export default function Receiver() {
-  const user = getUser();
+  const localUser = getUser();
 
   const [activeNav, setActiveNav] = useState("Overview");
   const [selectedId, setSelectedId] = useState(null);
-  const [showModal, setShowModal] = useState(false);
   const [filter, setFilter] = useState("All");
 
-  // ── Real data from backend ────────────────────
-  const [receiverOrders, setReceiverOrders] = useState([]);
+  const [shipments, setShipments] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [confirmingId, setConfirmingId] = useState(null);
 
-  const fetchOrders = () => {
+  // ── Fetch all shipments where I am receiver ───
+  const fetchShipments = useCallback(async () => {
     setLoading(true);
-    getShipments()
-      .then((data) => {
-        if (Array.isArray(data)) {
-          const formatted = data.map((s) => ({
-            id: s._id.slice(-8).toUpperCase(),
-            _id: s._id,
-            from: s.origin,
-            to: s.destination,
-            goods: s.cargo?.description || "—",
-            weight: `${s.cargo?.weight}kg`,
-            status: formatStatus(s.status),
-            eta: s.estimatedDelivery
-              ? new Date(s.estimatedDelivery).toLocaleDateString()
-              : "TBD",
-            driver: s.assignedDriver?.name || "Unassigned",
-            truck: s.assignedTruck?.plateNumber || "Unassigned",
-            date: new Date(s.createdAt).toLocaleDateString(),
-            checkpoints: s.checkpoints || [],
-          }));
-          setReceiverOrders(formatted);
-          if (formatted.length > 0) setSelectedId(formatted[0].id);
-        }
-      })
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchOrders();
+    setError(null);
+    try {
+      const res = await getShipments();
+      const list = Array.isArray(res) ? res : res?.shipments || [];
+      setShipments(list);
+      if (list.length > 0 && !selectedId) setSelectedId(list[0]._id);
+    } catch {
+      setError("Could not load deliveries.");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // ── Stats calculated from real data ──────────
-  const receiverStats = {
-    total: receiverOrders.length,
-    inTransit: receiverOrders.filter((o) => o.status === "In Transit").length,
-    delivered: receiverOrders.filter((o) => o.status === "Delivered").length,
-    pending: receiverOrders.filter((o) => o.status === "Pending").length,
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const res = await getMyNotifications();
+      setNotifications(Array.isArray(res) ? res : []);
+    } catch {}
+  }, []);
+
+  const fetchProfile = useCallback(async () => {
+    try {
+      const res = await getMyProfile();
+      setProfile(res?.user || res);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    fetchShipments();
+    fetchNotifications();
+    fetchProfile();
+    // Poll every 30 sec — live tracking updates
+    const interval = setInterval(() => {
+      fetchShipments();
+      fetchNotifications();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [fetchShipments, fetchNotifications, fetchProfile]);
+
+  // ── Receiver confirms delivery received ───────
+  const handleConfirmDelivery = async (shipmentId) => {
+    setConfirmingId(shipmentId);
+    try {
+      await updateShipmentStatus(
+        shipmentId,
+        "delivered",
+        "Delivery confirmed by receiver",
+      );
+      fetchShipments();
+    } catch {
+      alert("Failed to confirm. Please try again.");
+    } finally {
+      setConfirmingId(null);
+    }
   };
 
-  // ── Tracking timeline from checkpoints ───────
-  const selectedOrder = receiverOrders.find((o) => o.id === selectedId);
-  const trackingSteps =
-    selectedOrder?.checkpoints?.map((cp) => ({
-      label: cp.message,
-      time: new Date(cp.timestamp).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-      done: true,
-    })) || [];
-
-  const receiverNotifications = [];
-
+  // ── Derived ───────────────────────────────────
   const filters = ["All", "In Transit", "Delivered", "Pending"];
+
   const filtered =
     filter === "All"
-      ? receiverOrders
-      : receiverOrders.filter((o) => o.status === filter);
+      ? shipments
+      : shipments.filter((s) => formatStatus(s.status) === filter);
+
+  const selected = shipments.find((s) => s._id === selectedId);
+  const timelineSteps = buildTimeline(selected);
+
+  const stats = {
+    total: shipments.length,
+    inTransit: shipments.filter((s) => s.status === "in_transit").length,
+    delivered: shipments.filter((s) => s.status === "delivered").length,
+    pending: shipments.filter((s) => s.status === "pending_pickup").length,
+  };
+
+  const unreadNotifs = notifications
+    .filter((n) => !n.read)
+    .slice(0, 5)
+    .map((n) => ({
+      id: n._id,
+      message: n.message,
+      time: new Date(n.createdAt).toLocaleString(),
+    }));
+
+  const userName = profile?.name ?? localUser?.name ?? "User";
+  const firstName = userName.split(" ")[0];
+  const initials = userName
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+  const userPhone = profile?.phone ?? localUser?.phone ?? "";
+
+  if (loading)
+    return (
+      <div
+        className="flex items-center justify-center min-h-screen"
+        style={{ background: "#0a0f1e" }}
+      >
+        <p className="text-white/50 text-sm animate-pulse">
+          Loading deliveries…
+        </p>
+      </div>
+    );
+
+  if (error)
+    return (
+      <div
+        className="flex items-center justify-center min-h-screen"
+        style={{ background: "#0a0f1e" }}
+      >
+        <div className="text-center">
+          <p className="text-red-400 text-sm mb-3">{error}</p>
+          <button
+            onClick={fetchShipments}
+            className="text-xs text-white/50 px-4 py-2 rounded-xl border border-white/10 hover:bg-white/5 transition"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
 
   return (
     <div
@@ -302,75 +230,59 @@ export default function Receiver() {
         navItems={navItems}
         active={activeNav}
         setActive={setActiveNav}
-        user={{
-          name: user?.name || "User",
-          initials: user?.name
-            ? user.name
-                .split(" ")
-                .map((n) => n[0])
-                .join("")
-                .toUpperCase()
-            : "U",
-          phone: user?.phone || "",
-        }}
+        user={{ name: userName, initials, phone: userPhone }}
       />
 
       <main className="flex-1 p-8 overflow-auto relative z-10">
         <Topbar
-          title={`Good morning, ${user?.name?.split(" ")[0] || "User"} 👋`}
-          subtitle="Receiver Dashboard"
-          notifications={receiverNotifications}
+          title={`Hello, ${firstName} 👋`}
+          subtitle="Track your incoming deliveries"
+          notifications={unreadNotifs}
         />
 
+        {/* ── Stat Cards ── */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           <StatCard
-            label="Total Requests"
-            value={receiverStats.total}
+            label="Total Deliveries"
+            value={stats.total}
             sub="All time"
             accent="white"
-            icon="📋"
+            icon="📦"
           />
           <StatCard
             label="In Transit"
-            value={receiverStats.inTransit}
-            sub="Active now"
+            value={stats.inTransit}
+            sub="On the way"
             accent="blue"
             icon="🚛"
           />
           <StatCard
             label="Delivered"
-            value={receiverStats.delivered}
+            value={stats.delivered}
             sub="Completed"
             accent="green"
             icon="✅"
           />
           <StatCard
             label="Pending"
-            value={receiverStats.pending}
-            sub="Awaiting"
+            value={stats.pending}
+            sub="Not started"
             accent="orange"
             icon="⏳"
           />
         </div>
 
         <div className="grid grid-cols-5 gap-5">
+          {/* ── Deliveries List ── */}
           <div className="col-span-3" style={glassCard}>
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-sm font-black text-white uppercase tracking-widest">
-                My Orders
+                My Deliveries
               </h2>
-              <button
-                onClick={() => setShowModal(true)}
-                className="text-xs font-black text-white px-4 py-2 rounded-xl transition hover:opacity-90"
-                style={{
-                  background: "linear-gradient(135deg, #3b82f6, #2563eb)",
-                  boxShadow: "0 0 15px rgba(59,130,246,0.25)",
-                }}
-              >
-                + New Request
-              </button>
+              {/* No "New Request" button — receiver doesn't create shipments */}
             </div>
 
+            {/* Filter pills */}
             <div className="flex gap-2 mb-5">
               {filters.map((f) => (
                 <button
@@ -378,7 +290,7 @@ export default function Receiver() {
                   onClick={() => setFilter(f)}
                   className={`text-xs px-3 py-1.5 rounded-full border font-semibold transition-all ${
                     filter === f
-                      ? "text-white border-blue-500/50 bg-blue-500/15"
+                      ? "text-blue-300 border-blue-500/50 bg-blue-500/10"
                       : "text-white/30 border-white/10 hover:border-white/20 hover:text-white/50"
                   }`}
                 >
@@ -387,29 +299,28 @@ export default function Receiver() {
               ))}
             </div>
 
-            {/* Loading state */}
-            {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <p className="text-white/30 text-sm">Loading orders...</p>
-              </div>
-            ) : filtered.length === 0 ? (
-              <div className="flex items-center justify-center py-12">
-                <p className="text-white/25 text-sm">Koi order nahi mila</p>
+            {/* Shipments list */}
+            {filtered.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 gap-2">
+                <p className="text-white/25 text-sm">No deliveries found</p>
+                <p className="text-white/15 text-xs">
+                  Deliveries sent to you will appear here
+                </p>
               </div>
             ) : (
               <div className="flex flex-col gap-2">
-                {filtered.map((order) => (
+                {filtered.map((s) => (
                   <div
-                    key={order.id}
-                    onClick={() => setSelectedId(order.id)}
+                    key={s._id}
+                    onClick={() => setSelectedId(s._id)}
                     className="flex items-center gap-4 p-3 rounded-xl cursor-pointer transition-all duration-200"
                     style={{
                       background:
-                        selectedId === order.id
+                        selectedId === s._id
                           ? "rgba(59,130,246,0.08)"
                           : "rgba(255,255,255,0.02)",
                       border:
-                        selectedId === order.id
+                        selectedId === s._id
                           ? "1px solid rgba(59,130,246,0.20)"
                           : "1px solid rgba(255,255,255,0.05)",
                     }}
@@ -417,81 +328,147 @@ export default function Receiver() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-sm font-black text-white">
-                          #{order.id}
+                          #{s._id?.slice(-6)?.toUpperCase()}
                         </span>
                         <span className="text-xs text-white/25">
-                          {order.date}
+                          {s.createdAt
+                            ? new Date(s.createdAt).toLocaleDateString()
+                            : "—"}
                         </span>
                       </div>
                       <p className="text-xs text-white/45 truncate">
-                        {order.from} → {order.to} · {order.goods} ·{" "}
-                        {order.weight}
+                        {s.origin ?? "—"} → {s.destination ?? "—"} ·{" "}
+                        {s.cargo?.description ?? "—"} ·{" "}
+                        {s.cargo?.weight ? `${s.cargo.weight} kg` : "—"}
                       </p>
                     </div>
-                    <Badge status={order.status} />
+                    <Badge status={formatStatus(s.status)} />
                   </div>
                 ))}
               </div>
             )}
           </div>
 
-          <div className="col-span-2" style={glassCard}>
-            {selectedOrder ? (
+          {/* ── Live Tracking Panel ── */}
+          <div className="col-span-2 flex flex-col gap-5">
+            {selected ? (
               <>
-                <div className="flex items-center justify-between mb-5">
-                  <h2 className="text-sm font-black text-white uppercase tracking-widest">
+                {/* Details card */}
+                <div style={glassCard}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-sm font-black text-white uppercase tracking-widest">
+                      Details
+                    </h2>
+                    <Badge status={formatStatus(selected.status)} />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    {[
+                      ["From", selected.origin ?? "—"],
+                      ["To", selected.destination ?? "—"],
+                      ["Cargo", selected.cargo?.description ?? "—"],
+                      [
+                        "Weight",
+                        selected.cargo?.weight
+                          ? `${selected.cargo.weight} kg`
+                          : "—",
+                      ],
+                      [
+                        "Driver",
+                        selected.assignedDriver?.name ?? "Not assigned",
+                      ],
+                      [
+                        "Truck",
+                        selected.assignedTruck?.plateNumber ?? "Not assigned",
+                      ],
+                      [
+                        "ETA",
+                        selected.estimatedDelivery
+                          ? new Date(
+                              selected.estimatedDelivery,
+                            ).toLocaleDateString()
+                          : "TBD",
+                      ],
+                      ["Sender", selected.sender?.name ?? "—"],
+                    ].map(([k, v]) => (
+                      <div
+                        key={k}
+                        className="rounded-xl p-3"
+                        style={{
+                          background: "rgba(255,255,255,0.03)",
+                          border: "1px solid rgba(255,255,255,0.06)",
+                        }}
+                      >
+                        <p className="text-xs text-white/30 uppercase tracking-wider mb-1">
+                          {k}
+                        </p>
+                        <p className="text-xs font-bold text-white">{v}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Confirm Delivery button — only when in_transit */}
+                  {selected.status === "in_transit" && (
+                    <button
+                      onClick={() => handleConfirmDelivery(selected._id)}
+                      disabled={confirmingId === selected._id}
+                      className="w-full py-2.5 text-white text-xs font-black rounded-xl transition hover:opacity-90 disabled:opacity-50"
+                      style={{
+                        background: "linear-gradient(135deg, #22c55e, #16a34a)",
+                        boxShadow: "0 0 15px rgba(34,197,94,0.25)",
+                      }}
+                    >
+                      {confirmingId === selected._id
+                        ? "Confirming..."
+                        : "✓ Confirm Delivery Received"}
+                    </button>
+                  )}
+
+                  {selected.status === "delivered" && (
+                    <div
+                      className="w-full py-2.5 text-center text-xs font-black rounded-xl text-green-400"
+                      style={{
+                        background: "rgba(34,197,94,0.08)",
+                        border: "1px solid rgba(34,197,94,0.20)",
+                      }}
+                    >
+                      ✓ Delivery Completed
+                    </div>
+                  )}
+                </div>
+
+                {/* Timeline / tracking */}
+                <div style={glassCard}>
+                  <h2 className="text-sm font-black text-white uppercase tracking-widest mb-4">
                     Live Tracking
                   </h2>
-                  <Badge status={selectedOrder.status} />
-                </div>
-
-                <div
-                  className="rounded-xl p-4 mb-5 grid grid-cols-2 gap-3"
-                  style={{
-                    background: "rgba(255,255,255,0.03)",
-                    border: "1px solid rgba(255,255,255,0.06)",
-                  }}
-                >
-                  {[
-                    ["Route", `${selectedOrder.from} → ${selectedOrder.to}`],
-                    ["ETA", selectedOrder.eta],
-                    ["Driver", selectedOrder.driver],
-                    ["Truck", selectedOrder.truck],
-                  ].map(([k, v]) => (
-                    <div key={k}>
-                      <p className="text-xs text-white/30 mb-0.5 uppercase tracking-wider">
-                        {k}
+                  {timelineSteps.length > 0 ? (
+                    <TrackingTimeline steps={timelineSteps} />
+                  ) : (
+                    <div className="flex items-center justify-center h-24">
+                      <p className="text-white/30 text-sm">
+                        No tracking updates yet
                       </p>
-                      <p className="text-xs font-bold text-white">{v}</p>
                     </div>
-                  ))}
-                </div>
-
-                <TrackingTimeline steps={trackingSteps} />
-
-                {trackingSteps.length === 0 && (
-                  <p className="text-xs text-white/25 text-center mt-4">
-                    Abhi koi update nahi hai
+                  )}
+                  <p className="text-xs text-white/20 text-center mt-3">
+                    Auto-refreshes every 30 seconds
                   </p>
-                )}
+                </div>
               </>
             ) : (
-              <div className="flex items-center justify-center h-full min-h-48">
-                <p className="text-sm text-white/25">
-                  Select an order to track
+              <div
+                style={glassCard}
+                className="flex items-center justify-center h-40"
+              >
+                <p className="text-white/30 text-sm">
+                  Select a delivery to track
                 </p>
               </div>
             )}
           </div>
         </div>
       </main>
-
-      {showModal && (
-        <NewRequestModal
-          onClose={() => setShowModal(false)}
-          onSubmitted={fetchOrders}
-        />
-      )}
     </div>
   );
 }

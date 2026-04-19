@@ -1,36 +1,39 @@
-import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { loginUser, saveAuth, getDashboardRoute } from "../utils/api";
+import { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { loginUser, getDashboardRoute } from "../utils/api";
+import { useAuth } from "../context/AuthContext";
+
 export default function Login() {
-  const navigate = useNavigate()
-  const [form, setForm] = useState({ email: '', password: '' })
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const navigate = useNavigate();
+  const { login } = useAuth(); // ← AuthContext ka login use karo
+  const [form, setForm] = useState({ email: "", password: "" });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const handleChange = e => setForm({ ...form, [e.target.name]: e.target.value })
+  const handleChange = (e) =>
+    setForm({ ...form, [e.target.name]: e.target.value });
 
-   const handleSubmit = async (e) => {
-     e.preventDefault();
-     setError("");
-     setLoading(true);
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
 
-     try {
-       const data = await loginUser(form.email, form.password);
+    try {
+      const data = await loginUser(form.email, form.password);
 
-       if (data.token) {
-         saveAuth(data.token, data.user);
-         // Redirect to role-based dashboard
-         navigate(getDashboardRoute(data.user.role));
-       } else {
-         setError(data.message || "Login failed");
-       }
-     } catch (err) {
-       setError("Something went wrong. Try again.");
-     } finally {
-       setLoading(false);
-     }
-   };
-
+      if (data.token) {
+        // ✅ AuthContext update + localStorage dono ek saath
+        login(data.user, data.token);
+        navigate(getDashboardRoute(data.user.role));
+      } else {
+        setError(data.message || "Login failed");
+      }
+    } catch (err) {
+      setError("Something went wrong. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0f1e] flex items-center justify-center px-4 relative overflow-hidden">
@@ -38,10 +41,11 @@ export default function Login() {
       <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-orange-500/8 rounded-full blur-[100px] pointer-events-none" />
 
       <div className="relative z-10 w-full max-w-md">
-
         <div className="text-center mb-10">
           <Link to="/">
-            <p className="text-4xl font-black bg-linear-to-r from-blue-400 to-orange-400 bg-clip-text text-transparent mb-1">UTI</p>
+            <p className="text-4xl font-black bg-linear-to-r from-blue-400 to-orange-400 bg-clip-text text-transparent mb-1">
+              UTI
+            </p>
           </Link>
           <p className="text-white/40 text-sm">Unified Transport Interface</p>
         </div>
@@ -58,7 +62,9 @@ export default function Login() {
 
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div>
-              <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">Email</label>
+              <label className="text-white/50 text-xs font-semibold uppercase tracking-wider block mb-2">
+                Email
+              </label>
               <input
                 type="email"
                 name="email"
@@ -71,8 +77,15 @@ export default function Login() {
 
             <div>
               <div className="flex justify-between items-center mb-2">
-                <label className="text-white/50 text-xs font-semibold uppercase tracking-wider">Password</label>
-                <a href="#" className="text-blue-400 text-xs hover:text-blue-300 transition">Forgot password?</a>
+                <label className="text-white/50 text-xs font-semibold uppercase tracking-wider">
+                  Password
+                </label>
+                <a
+                  href="#"
+                  className="text-blue-400 text-xs hover:text-blue-300 transition"
+                >
+                  Forgot password?
+                </a>
               </div>
               <input
                 type="password"
@@ -89,13 +102,16 @@ export default function Login() {
               disabled={loading}
               className="w-full py-3.5 bg-linear-to-r from-blue-600 to-blue-500 text-white font-bold text-sm rounded-xl hover:opacity-90 transition disabled:opacity-50 disabled:cursor-not-allowed mt-2"
             >
-              {loading ? 'Signing in...' : 'Sign In'}
+              {loading ? "Signing in..." : "Sign In"}
             </button>
           </form>
 
           <p className="text-center text-white/35 text-sm mt-6">
-            Don't have an account?{' '}
-            <Link to="/signup" className="text-blue-400 font-semibold hover:text-blue-300 transition">
+            Don't have an account?{" "}
+            <Link
+              to="/signup"
+              className="text-blue-400 font-semibold hover:text-blue-300 transition"
+            >
               Create one
             </Link>
           </p>
@@ -106,5 +122,5 @@ export default function Login() {
         </p>
       </div>
     </div>
-  )
+  );
 }

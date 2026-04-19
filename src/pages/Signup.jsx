@@ -4,12 +4,6 @@ import { registerUser, saveAuth, getDashboardRoute } from "../utils/api";
 
 const roles = [
   {
-    value: "receiver",
-    label: "Receiver",
-    icon: "📦",
-    desc: "I need goods delivered",
-  },
-  {
     value: "sender",
     label: "Sender",
     icon: "🏭",
@@ -26,6 +20,12 @@ const roles = [
     label: "Driver",
     icon: "🧑‍✈️",
     desc: "I drive and deliver goods",
+  },
+  {
+    value: "receiver",
+    label: "Receiver",
+    icon: "📦",
+    desc: "I need goods delivered",
   },
 ];
 

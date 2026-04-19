@@ -6,9 +6,8 @@ import Badge from "../components/shared/Badge";
 import TrackingTimeline from "../components/shared/TrackingTimeline";
 import {
   getMyProfile,
-  getTrips,
+  getShipments,
   updateShipmentStatus,
-  completeTrip,
   getUser,
   getMyRequests,
   respondToRequest,
@@ -34,17 +33,6 @@ const glassCard = {
   padding: "1.5rem",
 };
 
-const tripStatusToBadge = (status) => {
-  const map = {
-    "in-transit": "Active",
-    in_transit: "Active",
-    pending: "Pending",
-    delivered: "Delivered",
-    completed: "Completed",
-  };
-  return map[status] || status;
-};
-
 const buildTimelineSteps = (shipment) => {
   if (!shipment) return [];
   const steps = [
@@ -65,7 +53,7 @@ const buildTimelineSteps = (shipment) => {
       }),
     );
   }
-  if (shipment.status !== "delivered" && shipment.status !== "completed") {
+  if (shipment.status !== "delivered" && shipment.status !== "cancelled") {
     steps.push({
       label: "Delivery Pending",
       time: shipment.estimatedDelivery
@@ -89,25 +77,23 @@ function RoutePanel({ shipment }) {
     setLoading(true);
     setError("");
     try {
-      // Step 1: Geocode origin
-      const geoOrigin = await fetch(
-        `https://api.openrouteservice.org/geocode/search?api_key=${ORS_KEY}&text=${encodeURIComponent(shipment.origin)}&size=1`,
-      ).then((r) => r.json());
-      const originCoords = geoOrigin.features?.[0]?.geometry?.coordinates;
+      const [geoOrigin, geoDest] = await Promise.all([
+        fetch(
+          `https://api.openrouteservice.org/geocode/search?api_key=${ORS_KEY}&text=${encodeURIComponent(shipment.origin)}&size=1`,
+        ).then((r) => r.json()),
+        fetch(
+          `https://api.openrouteservice.org/geocode/search?api_key=${ORS_KEY}&text=${encodeURIComponent(shipment.destination)}&size=1`,
+        ).then((r) => r.json()),
+      ]);
 
-      // Step 2: Geocode destination
-      const geoDest = await fetch(
-        `https://api.openrouteservice.org/geocode/search?api_key=${ORS_KEY}&text=${encodeURIComponent(shipment.destination)}&size=1`,
-      ).then((r) => r.json());
+      const originCoords = geoOrigin.features?.[0]?.geometry?.coordinates;
       const destCoords = geoDest.features?.[0]?.geometry?.coordinates;
 
       if (!originCoords || !destCoords) {
-        setError("Could not find coordinates for origin or destination.");
+        setError("Could not find coordinates. Check city names.");
         return;
       }
 
-      // Step 3: Get optimized route from ORS
-      // Use HGV profile to avoid no-entry zones for trucks
       const orsRes = await fetch(
         "https://api.openrouteservice.org/v2/directions/driving-hgv",
         {
@@ -133,14 +119,13 @@ function RoutePanel({ shipment }) {
 
       const route = orsRes.routes?.[0];
       if (!route) {
-        setError("No route found. Check origin/destination names.");
+        setError("No route found.");
         return;
       }
 
       const summary = route.summary;
       const steps = route.segments?.[0]?.steps?.slice(0, 6) || [];
 
-      // Step 4: Get weather at origin
       let weather = null;
       let warnings = [];
       try {
@@ -171,14 +156,11 @@ function RoutePanel({ shipment }) {
           warnings.push(
             `🌫️ Low visibility: ${(weather.visibility / 1000).toFixed(1)} km`,
           );
-      } catch {
-        /* weather fail silently */
-      }
+      } catch {}
 
       setRouteData({
         distanceKm: parseFloat(summary.distance.toFixed(1)),
         durationHours: parseFloat((summary.duration / 3600).toFixed(1)),
-        durationMin: Math.round(summary.duration / 60),
         directions: steps.map((s) => ({
           instruction: s.instruction,
           distanceKm: parseFloat((s.distance / 1000).toFixed(1)),
@@ -187,14 +169,13 @@ function RoutePanel({ shipment }) {
         warnings,
       });
       setLastUpdated(new Date().toLocaleTimeString());
-    } catch (err) {
-      setError("Route optimization failed. Check API key or city names.");
+    } catch {
+      setError("Route optimization failed. Check API keys.");
     } finally {
       setLoading(false);
     }
   }, [shipment]);
 
-  // Auto-fetch on mount + every 10 minutes
   useEffect(() => {
     fetchRoute();
     const interval = setInterval(fetchRoute, 10 * 60 * 1000);
@@ -203,7 +184,7 @@ function RoutePanel({ shipment }) {
 
   return (
     <div style={glassCard}>
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex items-center justify-between mb-4">
         <h2 className="text-sm font-black text-white uppercase tracking-widest">
           Live Route Optimization
         </h2>
@@ -222,7 +203,6 @@ function RoutePanel({ shipment }) {
         </div>
       </div>
 
-      {/* Route info: origin → destination */}
       <div className="flex items-center gap-2 mb-4">
         <span className="text-xs font-bold text-white/70">
           {shipment.origin}
@@ -247,7 +227,7 @@ function RoutePanel({ shipment }) {
         <div className="text-center py-8">
           <div className="w-8 h-8 border-2 border-purple-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
           <p className="text-white/40 text-xs animate-pulse">
-            Optimizing route — avoiding no-entry zones...
+            Optimizing — avoiding no-entry zones...
           </p>
         </div>
       )}
@@ -266,7 +246,6 @@ function RoutePanel({ shipment }) {
 
       {routeData && (
         <>
-          {/* Stats row */}
           <div className="grid grid-cols-3 gap-3 mb-4">
             <div
               className="rounded-xl p-3 text-center"
@@ -295,9 +274,7 @@ function RoutePanel({ shipment }) {
             <div
               className="rounded-xl p-3 text-center"
               style={{
-                background: routeData.weather
-                  ? "rgba(59,130,246,0.08)"
-                  : "rgba(255,255,255,0.03)",
+                background: "rgba(59,130,246,0.08)",
                 border: "1px solid rgba(59,130,246,0.20)",
               }}
             >
@@ -311,7 +288,6 @@ function RoutePanel({ shipment }) {
             </div>
           </div>
 
-          {/* Warnings */}
           {routeData.warnings.length > 0 && (
             <div className="mb-4 flex flex-col gap-2">
               {routeData.warnings.map((w, i) => (
@@ -329,35 +305,29 @@ function RoutePanel({ shipment }) {
             </div>
           )}
 
-          {/* Turn-by-turn directions */}
-          <div>
-            <p className="text-xs text-white/30 uppercase tracking-widest font-semibold mb-2">
-              Turn-by-turn
-            </p>
-            <div className="flex flex-col gap-1.5">
-              {routeData.directions.map((d, i) => (
-                <div
-                  key={i}
-                  className="flex items-start gap-3 px-3 py-2 rounded-lg"
-                  style={{
-                    background: "rgba(255,255,255,0.02)",
-                    border: "1px solid rgba(255,255,255,0.05)",
-                  }}
-                >
-                  <span className="text-xs text-purple-400 font-black shrink-0 mt-0.5">
-                    {i + 1}
-                  </span>
-                  <p className="text-xs text-white/60 flex-1">
-                    {d.instruction}
-                  </p>
-                  <span className="text-xs text-white/25 shrink-0">
-                    {d.distanceKm} km
-                  </span>
-                </div>
-              ))}
-            </div>
+          <p className="text-xs text-white/30 uppercase tracking-widest font-semibold mb-2">
+            Turn-by-turn
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {routeData.directions.map((d, i) => (
+              <div
+                key={i}
+                className="flex items-start gap-3 px-3 py-2 rounded-lg"
+                style={{
+                  background: "rgba(255,255,255,0.02)",
+                  border: "1px solid rgba(255,255,255,0.05)",
+                }}
+              >
+                <span className="text-xs text-purple-400 font-black shrink-0 mt-0.5">
+                  {i + 1}
+                </span>
+                <p className="text-xs text-white/60 flex-1">{d.instruction}</p>
+                <span className="text-xs text-white/25 shrink-0">
+                  {d.distanceKm} km
+                </span>
+              </div>
+            ))}
           </div>
-
           <p className="text-xs text-white/20 mt-3 text-center">
             Auto-recalculates every 10 min · HGV no-entry zones avoided
           </p>
@@ -368,7 +338,7 @@ function RoutePanel({ shipment }) {
 }
 
 // ── Update Status Modal ───────────────────────────────────────────
-function UpdateStatusModal({ shipmentId, tripId, onClose, onUpdated }) {
+function UpdateStatusModal({ shipmentId, onClose, onUpdated }) {
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -399,9 +369,7 @@ function UpdateStatusModal({ shipmentId, tripId, onClose, onUpdated }) {
     const opt = statusOptions.find((o) => o.label === selected);
     setLoading(true);
     try {
-      if (opt.value === "delivered" && tripId) await completeTrip(tripId);
-      if (shipmentId)
-        await updateShipmentStatus(shipmentId, opt.value, opt.message);
+      await updateShipmentStatus(shipmentId, opt.value, opt.message);
       onUpdated();
       onClose();
     } catch {
@@ -493,7 +461,7 @@ export default function DriverDashboard() {
   const [activeNav, setActiveNav] = useState("Overview");
   const [showModal, setShowModal] = useState(false);
   const [profile, setProfile] = useState(null);
-  const [trips, setTrips] = useState([]);
+  const [shipments, setShipments] = useState([]);
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -503,13 +471,16 @@ export default function DriverDashboard() {
     try {
       setLoading(true);
       setError(null);
-      const [profileRes, tripsRes, requestsRes] = await Promise.all([
+      const [profileRes, shipmentsRes, requestsRes] = await Promise.all([
         getMyProfile(),
-        getTrips(),
+        getShipments(), // ✅ trips ki jagah shipments
         getMyRequests(),
       ]);
       setProfile(profileRes);
-      setTrips(Array.isArray(tripsRes) ? tripsRes : tripsRes.trips || []);
+      // Shipments — driver ko assigned wali
+      const allShipments = Array.isArray(shipmentsRes) ? shipmentsRes : [];
+      setShipments(allShipments);
+      // Requests — sirf pending wali dikhao
       setRequests(
         Array.isArray(requestsRes)
           ? requestsRes.filter((r) => r.status === "pending")
@@ -522,19 +493,16 @@ export default function DriverDashboard() {
     }
   };
 
-  // Poll for new requests every 30 seconds
+  // Poll every 30 sec
   useEffect(() => {
     fetchData();
     const interval = setInterval(async () => {
       try {
         const res = await getMyRequests();
-        const list = Array.isArray(res)
-          ? res.filter((r) => r.status === "pending")
-          : [];
-        setRequests(list);
-      } catch {
-        /* silent */
-      }
+        setRequests(
+          Array.isArray(res) ? res.filter((r) => r.status === "pending") : [],
+        );
+      } catch {}
     }, 30000);
     return () => clearInterval(interval);
   }, []);
@@ -544,7 +512,7 @@ export default function DriverDashboard() {
     try {
       await respondToRequest(requestId, status);
       setRequests((prev) => prev.filter((r) => r._id !== requestId));
-      if (status === "accepted") fetchData(); // refresh trips
+      if (status === "accepted") fetchData();
     } catch {
       alert("Failed to respond. Try again.");
     } finally {
@@ -552,28 +520,19 @@ export default function DriverDashboard() {
     }
   };
 
-  // Current active trip
-  const currentTrip = trips.find(
-    (t) =>
-      t.status === "in-transit" ||
-      t.status === "in_transit" ||
-      t.status === "pending",
+  // ── Current trip = in_transit shipment assigned to driver ──
+  const currentTrip = shipments.find(
+    (s) => s.status === "in_transit" || s.status === "pending_pickup",
   );
-  const pastTrips = trips.filter(
-    (t) => t.status === "completed" || t.status === "delivered",
+  const pastTrips = shipments.filter(
+    (s) => s.status === "delivered" || s.status === "cancelled",
   );
 
-  // Shipment linked to current trip
-  const currentShipment =
-    currentTrip?.shipment && typeof currentTrip.shipment === "object"
-      ? currentTrip.shipment
-      : null;
-
+  // currentShipment = currentTrip itself (shipment IS the trip now)
+  const currentShipment = currentTrip || null;
   const timelineSteps = buildTimelineSteps(currentShipment);
-  const totalEarned = pastTrips.reduce(
-    (sum, t) => sum + (t.fare || t.earnings || 0),
-    0,
-  );
+
+  const totalEarned = pastTrips.reduce((sum, s) => sum + (s.price ?? 0), 0);
 
   const localUser = getUser();
   const userName = profile?.name ?? localUser?.name ?? "Driver";
@@ -756,7 +715,11 @@ export default function DriverDashboard() {
               <div className="flex items-center gap-3">
                 <Badge
                   status={
-                    currentTrip ? tripStatusToBadge(currentTrip.status) : "None"
+                    currentTrip
+                      ? currentTrip.status === "in_transit"
+                        ? "Active"
+                        : "Pending"
+                      : "None"
                   }
                 />
                 {currentTrip && (
@@ -777,27 +740,30 @@ export default function DriverDashboard() {
             {currentTrip ? (
               <div className="grid grid-cols-3 gap-3">
                 {[
-                  ["Trip ID", currentTrip._id?.slice(-6)?.toUpperCase() ?? "—"],
+                  [
+                    "Shipment ID",
+                    currentTrip._id?.slice(-6)?.toUpperCase() ?? "—",
+                  ],
                   [
                     "Route",
-                    `${currentShipment?.origin ?? "—"} → ${currentShipment?.destination ?? "—"}`,
+                    `${currentTrip.origin ?? "—"} → ${currentTrip.destination ?? "—"}`,
                   ],
                   [
                     "ETA",
-                    currentShipment?.estimatedDelivery
+                    currentTrip.estimatedDelivery
                       ? new Date(
-                          currentShipment.estimatedDelivery,
+                          currentTrip.estimatedDelivery,
                         ).toLocaleDateString()
                       : "—",
                   ],
-                  ["Cargo", currentShipment?.cargo?.description ?? "—"],
+                  ["Cargo", currentTrip.cargo?.description ?? "—"],
                   [
                     "Weight",
-                    currentShipment?.cargo?.weight
-                      ? `${currentShipment.cargo.weight} kg`
+                    currentTrip.cargo?.weight
+                      ? `${currentTrip.cargo.weight} kg`
                       : "—",
                   ],
-                  ["Receiver", currentShipment?.receiverName ?? "—"],
+                  ["Receiver", currentTrip.receiverName ?? "—"],
                 ].map(([k, v]) => (
                   <div
                     key={k}
@@ -835,10 +801,10 @@ export default function DriverDashboard() {
           </div>
         </div>
 
-        {/* ── Route Optimization — only when trip is active ── */}
-        {currentTrip && currentShipment && (
+        {/* ── Route Optimization ── */}
+        {currentTrip && (
           <div className="mb-5">
-            <RoutePanel shipment={currentShipment} />
+            <RoutePanel shipment={currentTrip} />
           </div>
         )}
 
@@ -849,9 +815,9 @@ export default function DriverDashboard() {
           </h2>
           {pastTrips.length > 0 ? (
             <div className="grid grid-cols-3 gap-4">
-              {pastTrips.map((t) => (
+              {pastTrips.map((s) => (
                 <div
-                  key={t._id}
+                  key={s._id}
                   className="rounded-xl p-4"
                   style={{
                     background: "rgba(255,255,255,0.02)",
@@ -860,21 +826,24 @@ export default function DriverDashboard() {
                 >
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-black text-white">
-                      #{t._id?.slice(-6)?.toUpperCase() ?? "—"}
+                      #{s._id?.slice(-6)?.toUpperCase() ?? "—"}
                     </span>
-                    <Badge status={tripStatusToBadge(t.status)} />
+                    <Badge
+                      status={
+                        s.status === "delivered" ? "Delivered" : "Cancelled"
+                      }
+                    />
                   </div>
                   <p className="text-xs text-white/50 mb-1">
-                    {t.shipment?.origin ?? "—"} →{" "}
-                    {t.shipment?.destination ?? "—"}
+                    {s.origin ?? "—"} → {s.destination ?? "—"}
                   </p>
                   <p className="text-xs text-white/25 mb-3">
-                    {t.updatedAt
-                      ? new Date(t.updatedAt).toLocaleDateString()
+                    {s.updatedAt
+                      ? new Date(s.updatedAt).toLocaleDateString()
                       : "—"}
                   </p>
                   <span className="text-base font-black text-green-400">
-                    ₹{(t.fare ?? t.earnings ?? 0).toLocaleString()}
+                    ₹{(s.price ?? 0).toLocaleString()}
                   </span>
                 </div>
               ))}
@@ -889,8 +858,7 @@ export default function DriverDashboard() {
 
       {showModal && currentTrip && (
         <UpdateStatusModal
-          shipmentId={currentShipment?._id}
-          tripId={currentTrip._id}
+          shipmentId={currentTrip._id}
           onClose={() => setShowModal(false)}
           onUpdated={fetchData}
         />
