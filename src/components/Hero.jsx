@@ -1,4 +1,4 @@
-import FleetMap from "./Fleetmap";
+import FleetMap from "./FleetMap";
 
 const Hero = () => {
   return (
